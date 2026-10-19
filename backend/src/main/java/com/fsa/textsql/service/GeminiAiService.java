@@ -4,8 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fsa.textsql.dto.FewShotExampleDto;
 import com.fsa.textsql.repository.FewShotRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -22,13 +22,13 @@ import java.util.Map;
  * 3. Call Google Gemini API (gemini-2.5-flash)
  * 4. Parse JSON response and extract clean SQL string
  */
-@Slf4j
 @Service
-@RequiredArgsConstructor
 public class GeminiAiService implements AiService {
 
+    private static final Logger log = LoggerFactory.getLogger(GeminiAiService.class);
+
     private final FewShotRepository fewShotRepository;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
 
     @Value("${gemini.api-key:}")
     private String apiKey;
@@ -50,6 +50,12 @@ public class GeminiAiService implements AiService {
         - playlist(playlist_id, name)
         - playlist_track(playlist_id, track_id)
         """;
+
+    // Standard constructor injection
+    public GeminiAiService(FewShotRepository fewShotRepository) {
+        this.fewShotRepository = fewShotRepository;
+        this.objectMapper = new ObjectMapper();
+    }
 
     @Override
     public String generateSql(String naturalLanguageQuestion) {

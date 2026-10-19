@@ -2,7 +2,6 @@ package com.fsa.textsql.controller;
 
 import com.fsa.textsql.dto.FewShotExampleDto;
 import com.fsa.textsql.repository.FewShotRepository;
-import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -13,10 +12,14 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/few-shots")
-@RequiredArgsConstructor
 public class FewShotController {
 
     private final FewShotRepository fewShotRepository;
+
+    // Standard constructor injection
+    public FewShotController(FewShotRepository fewShotRepository) {
+        this.fewShotRepository = fewShotRepository;
+    }
 
     @GetMapping
     public ResponseEntity<List<FewShotExampleDto>> getFewShots(

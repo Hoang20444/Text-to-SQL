@@ -1,7 +1,7 @@
 package com.fsa.textsql.repository;
 
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -11,12 +11,17 @@ import java.util.Map;
 /**
  * ASSIGNED TO: Dev 2 (Data Warehouse & Core Engine)
  */
-@Slf4j
 @Repository
-@RequiredArgsConstructor
 public class ChatHistoryJdbcRepository implements ChatHistoryRepository {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatHistoryJdbcRepository.class);
+
     private final JdbcTemplate jdbcTemplate;
+
+    // Standard constructor injection
+    public ChatHistoryJdbcRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
 
     @Override
     public void saveLog(String sessionId, String question, String sql, String status, 

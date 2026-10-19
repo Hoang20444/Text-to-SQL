@@ -7,8 +7,8 @@ import com.fsa.textsql.service.AiService;
 import com.fsa.textsql.service.QueryExecutionService;
 import com.fsa.textsql.service.SqlGuardrailService;
 import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -22,16 +22,27 @@ import java.util.Map;
  * - Dev 2: SqlGuardrailService & QueryExecutionService & ChatHistoryRepository
  * - Dev 1: Frontend contract
  */
-@Slf4j
 @RestController
 @RequestMapping("/api/v1")
-@RequiredArgsConstructor
 public class QueryController {
+
+    private static final Logger log = LoggerFactory.getLogger(QueryController.class);
 
     private final AiService aiService;
     private final SqlGuardrailService sqlGuardrailService;
     private final QueryExecutionService queryExecutionService;
     private final ChatHistoryRepository chatHistoryRepository;
+
+    // Standard constructor injection
+    public QueryController(AiService aiService,
+                           SqlGuardrailService sqlGuardrailService,
+                           QueryExecutionService queryExecutionService,
+                           ChatHistoryRepository chatHistoryRepository) {
+        this.aiService = aiService;
+        this.sqlGuardrailService = sqlGuardrailService;
+        this.queryExecutionService = queryExecutionService;
+        this.chatHistoryRepository = chatHistoryRepository;
+    }
 
     @PostMapping("/query")
     public ResponseEntity<QueryResponse> processQuery(@Valid @RequestBody QueryRequest request) {
@@ -61,37 +72,35 @@ public class QueryController {
                     executionTime
             );
 
-            return ResponseEntity.ok(QueryResponse.builder()
-                    .question(request.getQuestion())
-                    .generatedSql(validatedSql)
-                    .columns(queryResult.columns())
-                    .data(queryResult.rows())
-                    .suggestedChart(queryResult.suggestedChart())
-                    .rowCount(queryResult.rowCount())
-                    .executionTimeMs(executionTime)
-                    .status("SUCCESS")
-                    .build());
+            return ResponseEntity.ok(QueryResponse.success(
+                    request.getQuestion(),
+                    validatedSql,
+                    queryResult.columns(),
+                    queryResult.rows(),
+                    queryResult.suggestedChart(),
+                    queryResult.rowCount(),
+                    executionTime
+            ));
 
         } catch (SecurityException se) {
             long executionTime = System.currentTimeMillis() - startTime;
             chatHistoryRepository.saveLog(request.getSessionId(), request.getQuestion(), generatedSql, "GUARDRAIL_BLOCKED", se.getMessage(), 0, executionTime);
-            return ResponseEntity.badRequest().body(QueryResponse.builder()
-                    .question(request.getQuestion())
-                    .generatedSql(generatedSql)
-                    .status("GUARDRAIL_BLOCKED")
-                    .errorMessage("Guardrail chặn câu lệnh: " + se.getMessage())
-                    .executionTimeMs(executionTime)
-                    .build());
+            return ResponseEntity.badRequest().body(QueryResponse.blocked(
+                    request.getQuestion(),
+                    generatedSql,
+                    "Guardrail chặn câu lệnh: " + se.getMessage(),
+                    executionTime
+            ));
         } catch (Exception e) {
             long executionTime = System.currentTimeMillis() - startTime;
+            log.error("Query processing failed", e);
             chatHistoryRepository.saveLog(request.getSessionId(), request.getQuestion(), generatedSql, "ERROR", e.getMessage(), 0, executionTime);
-            return ResponseEntity.internalServerError().body(QueryResponse.builder()
-                    .question(request.getQuestion())
-                    .generatedSql(generatedSql)
-                    .status("ERROR")
-                    .errorMessage("Lỗi xử lý truy vấn: " + e.getMessage())
-                    .executionTimeMs(executionTime)
-                    .build());
+            return ResponseEntity.internalServerError().body(QueryResponse.error(
+                    request.getQuestion(),
+                    generatedSql,
+                    "Lỗi xử lý truy vấn: " + e.getMessage(),
+                    executionTime
+            ));
         }
     }
 

@@ -1,7 +1,7 @@
 package com.fsa.textsql.service;
 
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -20,10 +20,10 @@ import java.util.Map;
  * 3. Suggest Chart type (BAR, LINE, PIE, TABLE) based on column types and count
  * 4. Enforce query timeout to prevent hanging connections
  */
-@Slf4j
 @Service
-@RequiredArgsConstructor
 public class JdbcQueryExecutionService implements QueryExecutionService {
+
+    private static final Logger log = LoggerFactory.getLogger(JdbcQueryExecutionService.class);
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -32,6 +32,11 @@ public class JdbcQueryExecutionService implements QueryExecutionService {
 
     @Value("${guardrail.max-rows:100}")
     private int maxRows;
+
+    // Standard constructor injection
+    public JdbcQueryExecutionService(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
 
     @Override
     public QueryResult executeQuery(String sql) {
@@ -60,7 +65,7 @@ public class JdbcQueryExecutionService implements QueryExecutionService {
                 rows.add(row);
             }
 
-            // TODO: [Dev 2] Improve chart suggestion logic based on column types
+            // Detect chart type
             String suggestedChart = detectChartType(columnTypes, rows.size());
 
             return new QueryResult(columnNames, rows, suggestedChart, rows.size());
