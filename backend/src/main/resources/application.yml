@@ -1,0 +1,25 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: text-to-sql-backend
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:chinook_warehouse}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgrespassword}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 20000
+
+# Gemini AI Configuration
+gemini:
+  api-key: ${GEMINI_API_KEY:your_gemini_api_key_here}
+  model: ${GEMINI_MODEL:gemini-2.5-flash}
+  temperature: 0.1
+
+# Guardrail & Query Execution Rules
+guardrail:
+  max-rows: 100
+  timeout-seconds: 10

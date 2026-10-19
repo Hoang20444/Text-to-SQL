@@ -1,0 +1,152 @@
+[
+  {
+    "id": 1,
+    "difficulty": "EASY",
+    "question": "Có bao nhiêu nghệ sĩ trong hệ thống?",
+    "gold_sql": "SELECT COUNT(*) AS total_artists FROM artist;"
+  },
+  {
+    "id": 2,
+    "difficulty": "EASY",
+    "question": "Danh sách 10 bài hát có thời lượng dài nhất",
+    "gold_sql": "SELECT name, milliseconds FROM track ORDER BY milliseconds DESC LIMIT 10;"
+  },
+  {
+    "id": 3,
+    "difficulty": "EASY",
+    "question": "Danh sách tất cả các thể loại nhạc (Genre)",
+    "gold_sql": "SELECT name FROM genre ORDER BY name ASC;"
+  },
+  {
+    "id": 4,
+    "difficulty": "EASY",
+    "question": "Đếm số lượng khách hàng đến từ Mỹ (USA)",
+    "gold_sql": "SELECT COUNT(*) FROM customer WHERE country = 'USA';"
+  },
+  {
+    "id": 5,
+    "difficulty": "EASY",
+    "question": "Lấy thông tin 5 nhân viên được tuyển dụng sớm nhất",
+    "gold_sql": "SELECT first_name, last_name, hire_date FROM employee ORDER BY hire_date ASC LIMIT 5;"
+  },
+  {
+    "id": 6,
+    "difficulty": "EASY",
+    "question": "Có bao nhiêu album nhạc trong hệ thống?",
+    "gold_sql": "SELECT COUNT(*) FROM album;"
+  },
+  {
+    "id": 7,
+    "difficulty": "EASY",
+    "question": "Tổng số hoá đơn phát sinh trong hệ thống là bao nhiêu?",
+    "gold_sql": "SELECT COUNT(*) FROM invoice;"
+  },
+  {
+    "id": 8,
+    "difficulty": "EASY",
+    "question": "Tìm các bài hát của nghệ sĩ có tên bắt đầu bằng chữ A",
+    "gold_sql": "SELECT t.name FROM track t JOIN album al ON t.album_id = al.album_id JOIN artist ar ON al.artist_id = ar.artist_id WHERE ar.name ILIKE 'A%' LIMIT 20;"
+  },
+  {
+    "id": 9,
+    "difficulty": "EASY",
+    "question": "Giá bán đơn vị (unit_price) cao nhất của một bài hát là bao nhiêu?",
+    "gold_sql": "SELECT MAX(unit_price) FROM track;"
+  },
+  {
+    "id": 10,
+    "difficulty": "EASY",
+    "question": "Danh sách tên các quốc gia có khách hàng mua hàng",
+    "gold_sql": "SELECT DISTINCT country FROM customer ORDER BY country;"
+  },
+  {
+    "id": 11,
+    "difficulty": "MEDIUM",
+    "question": "Tổng doanh thu theo từng quốc gia của khách hàng?",
+    "gold_sql": "SELECT c.country, ROUND(SUM(i.total)::numeric, 2) AS total_revenue FROM customer c JOIN invoice i ON c.customer_id = i.customer_id GROUP BY c.country ORDER BY total_revenue DESC;"
+  },
+  {
+    "id": 12,
+    "difficulty": "MEDIUM",
+    "question": "Top 5 khách hàng chi tiêu nhiều tiền nhất",
+    "gold_sql": "SELECT c.customer_id, c.first_name || ' ' || c.last_name AS customer_name, ROUND(SUM(i.total)::numeric, 2) AS total_spent FROM customer c JOIN invoice i ON c.customer_id = i.customer_id GROUP BY c.customer_id, customer_name ORDER BY total_spent DESC LIMIT 5;"
+  },
+  {
+    "id": 13,
+    "difficulty": "MEDIUM",
+    "question": "Số lượng bài hát theo từng thể loại nhạc (Genre)",
+    "gold_sql": "SELECT g.name AS genre, COUNT(t.track_id) AS track_count FROM genre g JOIN track t ON g.genre_id = t.genre_id GROUP BY g.name ORDER BY track_count DESC;"
+  },
+  {
+    "id": 14,
+    "difficulty": "MEDIUM",
+    "question": "Top 10 nghệ sĩ có nhiều album nhất",
+    "gold_sql": "SELECT ar.name, COUNT(al.album_id) AS album_count FROM artist ar JOIN album al ON ar.artist_id = al.artist_id GROUP BY ar.name ORDER BY album_count DESC LIMIT 10;"
+  },
+  {
+    "id": 15,
+    "difficulty": "MEDIUM",
+    "question": "Tổng doanh thu bán hàng trong năm 2010 là bao nhiêu?",
+    "gold_sql": "SELECT ROUND(SUM(total)::numeric, 2) AS total_2010 FROM invoice WHERE EXTRACT(YEAR FROM invoice_date) = 2010;"
+  },
+  {
+    "id": 16,
+    "difficulty": "MEDIUM",
+    "question": "Số lượng hoá đơn theo từng năm",
+    "gold_sql": "SELECT EXTRACT(YEAR FROM invoice_date) AS year, COUNT(invoice_id) AS invoice_count FROM invoice GROUP BY year ORDER BY year ASC;"
+  },
+  {
+    "id": 17,
+    "difficulty": "MEDIUM",
+    "question": "Doanh thu trung bình trên mỗi hoá đơn là bao nhiêu?",
+    "gold_sql": "SELECT ROUND(AVG(total)::numeric, 2) AS avg_invoice_total FROM invoice;"
+  },
+  {
+    "id": 18,
+    "difficulty": "MEDIUM",
+    "question": "Khách hàng nào có số lượng hoá đơn nhiều nhất?",
+    "gold_sql": "SELECT c.customer_id, c.first_name, c.last_name, COUNT(i.invoice_id) AS invoice_count FROM customer c JOIN invoice i ON c.customer_id = i.customer_id GROUP BY c.customer_id, c.first_name, c.last_name ORDER BY invoice_count DESC LIMIT 1;"
+  },
+  {
+    "id": 19,
+    "difficulty": "MEDIUM",
+    "question": "Top 5 bài hát được mua nhiều lần nhất trong các hoá đơn",
+    "gold_sql": "SELECT t.name, COUNT(il.invoice_line_id) AS buy_count FROM track t JOIN invoice_line il ON t.track_id = il.track_id GROUP BY t.track_id, t.name ORDER BY buy_count DESC LIMIT 5;"
+  },
+  {
+    "id": 20,
+    "difficulty": "MEDIUM",
+    "question": "Doanh thu bán nhạc theo từng loại media (Media Type)",
+    "gold_sql": "SELECT mt.name, ROUND(SUM(il.unit_price * il.quantity)::numeric, 2) AS total_revenue FROM media_type mt JOIN track t ON mt.media_type_id = t.media_type_id JOIN invoice_line il ON t.track_id = il.track_id GROUP BY mt.name ORDER BY total_revenue DESC;"
+  },
+  {
+    "id": 21,
+    "difficulty": "HARD",
+    "question": "Doanh thu theo từng thể loại nhạc (Genre) sắp xếp giảm dần",
+    "gold_sql": "SELECT g.name AS genre_name, ROUND(SUM(il.unit_price * il.quantity)::numeric, 2) AS revenue FROM invoice_line il JOIN track t ON il.track_id = t.track_id JOIN genre g ON t.genre_id = g.genre_id GROUP BY g.name ORDER BY revenue DESC;"
+  },
+  {
+    "id": 22,
+    "difficulty": "HARD",
+    "question": "Top 3 nghệ sĩ mang lại doanh thu cao nhất cho cửa hàng",
+    "gold_sql": "SELECT ar.name, ROUND(SUM(il.unit_price * il.quantity)::numeric, 2) AS revenue FROM artist ar JOIN album al ON ar.artist_id = al.artist_id JOIN track t ON al.album_id = t.album_id JOIN invoice_line il ON t.track_id = il.track_id GROUP BY ar.artist_id, ar.name ORDER BY revenue DESC LIMIT 3;"
+  },
+  {
+    "id": 23,
+    "difficulty": "HARD",
+    "question": "Nhân viên hỗ trợ nào (Support Rep) có tổng doanh số bán hàng cao nhất?",
+    "gold_sql": "SELECT e.first_name || ' ' || e.last_name AS employee_name, ROUND(SUM(i.total)::numeric, 2) AS total_sales FROM employee e JOIN customer c ON e.employee_id = c.support_rep_id JOIN invoice i ON c.customer_id = i.customer_id GROUP BY e.employee_id, employee_name ORDER BY total_sales DESC LIMIT 1;"
+  },
+  {
+    "id": 24,
+    "difficulty": "HARD",
+    "question": "Những quốc gia nào có tổng doanh thu vượt quá 100 USD?",
+    "gold_sql": "SELECT billing_country, ROUND(SUM(total)::numeric, 2) AS country_revenue FROM invoice GROUP BY billing_country HAVING SUM(total) > 100 ORDER BY country_revenue DESC;"
+  },
+  {
+    "id": 25,
+    "difficulty": "HARD",
+    "question": "Thể loại nhạc phổ biến nhất tại Mỹ (USA) theo số lượt mua",
+    "gold_sql": "SELECT g.name AS genre, COUNT(il.invoice_line_id) AS purchases FROM invoice i JOIN customer c ON i.customer_id = c.customer_id JOIN invoice_line il ON i.invoice_id = il.invoice_id JOIN track t ON il.track_id = t.track_id JOIN genre g ON t.genre_id = g.genre_id WHERE c.country = 'USA' GROUP BY g.name ORDER BY purchases DESC LIMIT 1;"
+  }
+]
