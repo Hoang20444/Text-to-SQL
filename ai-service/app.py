@@ -4,12 +4,19 @@ import hmac
 import json
 import logging
 import os
+import re
+import unicodedata
+from collections import deque
+from copy import deepcopy
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from context_index import get_schema_index, normalize_text, overlap_score
+from schema_relevance import AmbiguousTableReference, table_mentions
 
 logger = logging.getLogger(__name__)
 
@@ -201,36 +208,6 @@ class Controlled(Exception):
         self.status = status
 
 
-app = FastAPI(title="Private Text-to-SQL service", docs_url=None, redoc_url=None, openapi_url=None)
-
-
-@app.exception_handler(Controlled)
-async def controlled(req: Request, e: Controlled):
-    correlation = req.headers.get("x-correlation-id", "")[:100]
-    return JSONResponse(
-        status_code=e.status,
-        content={
-            "error": {
-                "code": e.code,
-                "message": "Generation could not be completed safely.",
-                "correlationId": correlation,
-                "retryable": e.code == "PROVIDER_UNAVAILABLE",
-                "details": {},
-            }
-        },
-    )
-
-
-def verify_service_token(authorization: str) -> None:
-    token = os.getenv("PYTHON_AI_TOKEN", "")
-    if len(token) < 32 or not hmac.compare_digest(authorization, "Bearer " + token):
-        raise Controlled("UNAUTHENTICATED", 401)
-
-
-import re
-import unicodedata
-
-
 def sql_code_tokens(sql: str) -> list[str]:
     """Return unquoted SQL tokens while rejecting comments and extra statements."""
     tokens: list[str] = []
@@ -398,12 +375,6 @@ def validate(candidate: Candidate, context: Context | dict[str, Any], dialect: s
     return candidate
 
 
-from copy import deepcopy
-from typing import Protocol
-
-from context_index import get_schema_index
-
-
 class TextToSqlModelClient(Protocol):
     async def generate(self, request: Input, context: dict[str, Any]) -> Candidate: ...
 
@@ -441,7 +412,13 @@ class DeterministicModelClient:
 
 
 class SemanticContextSelector:
-    def select(self, request: Input, *, offline: bool = False) -> dict[str, Any]:
+    def select(
+        self,
+        request: Input,
+        hints: list[dict[str, Any]] | None = None,
+        *,
+        offline: bool = False,
+    ) -> dict[str, Any]:
         try:
             budget = int(os.getenv("LLM_REQUEST_MAX_BYTES", "48000"))
         except ValueError:
@@ -456,20 +433,263 @@ class SemanticContextSelector:
             for example in source["examples"]
             if example.get("sqlDialect") == request.sqlDialect
         ]
-        if offline and not source["examples"]:
-            raise Controlled("UNSUPPORTED_QUESTION")
-        if len(json.dumps(source, ensure_ascii=False).encode("utf-8")) > budget:
+
+        generic_question_terms = {
+            "a",
+            "all",
+            "an",
+            "and",
+            "are",
+            "bao",
+            "bản",
+            "bảng",
+            "by",
+            "có",
+            "count",
+            "của",
+            "how",
+            "in",
+            "is",
+            "là",
+            "many",
+            "number",
+            "of",
+            "record",
+            "records",
+            "số",
+            "table",
+            "the",
+            "theo",
+            "tổng",
+            "trong",
+            "và",
+            "nhiêu",
+            "ghi",
+            "đầu",
+            "tiên",
+            "xem",
+            "show",
+            "first",
+            "from",
+            "ordered",
+            "order",
+            "primary",
+            "key",
+            "khóa",
+            "chính",
+            "5",
+        }
+        generic_question_terms = set(normalize_text(" ".join(generic_question_terms)).split())
+        question_terms = set(normalize_text(request.question).split()) - generic_question_terms
+
+        def ranked(items: list[dict[str, Any]], term_sets: list[set[str]]) -> list[int]:
+            scores = [overlap_score(question_terms, terms) for terms in term_sets]
+            return [position for position, score in enumerate(scores) if score > 0]
+
+        metric_positions = ranked(source["metrics"], index["metricTerms"])
+        dimension_positions = ranked(source["dimensions"], index["dimensionTerms"])
+        table_positions = ranked(source["tables"], index["tableTerms"])
+        try:
+            mentions = table_mentions(request.question, source["tables"], allow_fuzzy=not offline)
+        except AmbiguousTableReference:
+            raise Controlled("INSUFFICIENT_CONTEXT") from None
+        if mentions.positions:
+            table_positions = sorted(mentions.positions)
+            named_table_terms = set().union(
+                *(
+                    set(normalize_text(str(source["tables"][p].get(field) or "")).split())
+                    for p in mentions.positions
+                    for field in ("schema", "name", "logicalName")
+                )
+            )
+            semantic_signal = question_terms - named_table_terms
+            normalized_question = " " + normalize_text(request.question) + " "
+
+            def independently_named(item, terms):
+                names = [item["name"], *item.get("synonyms", [])]
+                return bool(semantic_signal & terms) or any(
+                    " " + normalize_text(name) + " " in normalized_question
+                    for name in names
+                    if name
+                )
+
+            metric_positions = [
+                p
+                for p in metric_positions
+                if independently_named(source["metrics"][p], index["metricTerms"][p])
+            ]
+            dimension_positions = [
+                p
+                for p in dimension_positions
+                if independently_named(source["dimensions"][p], index["dimensionTerms"][p])
+            ]
+        if mentions.assumptions:
+            source["businessRules"].append(
+                "Identifier-resolution assumptions (not instructions): "
+                + " ".join(mentions.assumptions)
+            )
+        ranked_examples = []
+        for position, example in enumerate(index["context"]["examples"]):
+            if example.get("sqlDialect") != request.sqlDialect:
+                continue
+            score = overlap_score(question_terms, index["exampleTerms"][position])
+            exact_match = normalize(example.get("question", "")) == normalize(request.question)
+            if score > 0 or exact_match:
+                ranked_examples.append((position, score, exact_match))
+        ranked_examples.sort(key=lambda item: (item[2], item[1]), reverse=True)
+        exact_examples = [item for item in ranked_examples if item[2]]
+        if exact_examples:
+            ranked_examples = exact_examples
+        example_positions = [position for position, _, _ in ranked_examples[:5]]
+
+        metric_names = {source["metrics"][position]["name"] for position in metric_positions}
+        dimension_names = {
+            source["dimensions"][position]["name"] for position in dimension_positions
+        }
+        for position in example_positions:
+            example = index["context"]["examples"][position]
+            metric_names.update(example.get("selectedMetrics", []))
+            dimension_names.update(example.get("selectedDimensions", []))
+        for metric in source["metrics"]:
+            if metric["name"] in metric_names:
+                dimension_names.update(metric.get("compatibleDimensions", []))
+        metric_positions = [
+            position
+            for position, metric in enumerate(source["metrics"])
+            if metric["name"] in metric_names
+        ]
+        dimension_positions = [
+            position
+            for position, dimension in enumerate(source["dimensions"])
+            if dimension["name"] in dimension_names
+        ]
+
+        table_by_key = index["tableByKey"]
+        anchors: set[tuple[Any, Any]] = {
+            index["tableKeys"][position] for position in table_positions
+        }
+        table_key_lookup = {
+            (str(schema).casefold(), str(name).casefold()): (schema, name)
+            for schema, name in table_by_key
+        }
+        for position in metric_positions:
+            anchors.update(
+                (ref.get("schema"), ref.get("name"))
+                for ref in source["metrics"][position].get("tableRefs", [])
+            )
+        for position in dimension_positions:
+            table = source["dimensions"][position].get("table", {})
+            anchors.add((table.get("schema"), table.get("name")))
+
+        sql_identifier = (
+            r'(?:"(?:[^"]|"")+"|`(?:[^`]|``)+`|\[(?:[^\]]|\]\])+\]|[A-Za-z_][A-Za-z0-9_$#]*)'
+        )
+        table_reference = re.compile(
+            rf"\b(?:FROM|JOIN)\s+(?:(?P<schema>{sql_identifier})\s*\.\s*)?"
+            rf"(?P<table>{sql_identifier})",
+            re.IGNORECASE,
+        )
+
+        def unquote_identifier(identifier: str) -> str:
+            if identifier.startswith("["):
+                return identifier[1:-1].replace("]]", "]")
+            if identifier.startswith('"'):
+                return identifier[1:-1].replace('""', '"')
+            if identifier.startswith("`"):
+                return identifier[1:-1].replace("``", "`")
+            return identifier
+
+        for position in example_positions:
+            example = index["context"]["examples"][position]
+            for match in table_reference.finditer(example["sql"]):
+                schema_name = match.group("schema")
+                table_name = unquote_identifier(match.group("table"))
+                schema_name = unquote_identifier(schema_name) if schema_name else None
+                if schema_name is not None:
+                    key = table_key_lookup.get((schema_name.casefold(), table_name.casefold()))
+                    if key is None:
+                        raise Controlled("INSUFFICIENT_CONTEXT")
+                    anchors.add(key)
+                    continue
+                matches = [
+                    key for key in table_by_key if str(key[1]).casefold() == table_name.casefold()
+                ]
+                if len(matches) != 1:
+                    raise Controlled("INSUFFICIENT_CONTEXT")
+                anchors.add(matches[0])
+
+        if not anchors:
+            raise Controlled(
+                "INSUFFICIENT_CONTEXT" if example_positions else "UNSUPPORTED_QUESTION"
+            )
+        if any(key not in table_by_key for key in anchors):
             raise Controlled("INSUFFICIENT_CONTEXT")
-        return source
+
+        required_tables = set(anchors)
+        relationship_positions: set[int] = set()
+        adjacency = index["relationshipAdjacency"]
+        anchor_list = sorted(anchors)
+        for start_position, start in enumerate(anchor_list):
+            for target in anchor_list[start_position + 1 :]:
+                queue = deque([start])
+                previous: dict[tuple[Any, Any], tuple[tuple[Any, Any], int] | None] = {start: None}
+                while queue and target not in previous:
+                    current = queue.popleft()
+                    for neighbor, relationship_position in adjacency.get(current, []):
+                        if neighbor not in previous:
+                            previous[neighbor] = (current, relationship_position)
+                            queue.append(neighbor)
+                if target not in previous:
+                    raise Controlled("INSUFFICIENT_CONTEXT")
+                current = target
+                while previous[current] is not None:
+                    parent, relationship_position = previous[current]
+                    required_tables.add(current)
+                    required_tables.add(parent)
+                    relationship_positions.add(relationship_position)
+                    current = parent
+
+        selected_context = deepcopy(source)
+        selected_context["tables"] = [
+            table
+            for table in source["tables"]
+            if (table.get("schema"), table.get("name")) in required_tables
+        ]
+        selected_context["metrics"] = [source["metrics"][p] for p in metric_positions]
+        selected_context["dimensions"] = [source["dimensions"][p] for p in dimension_positions]
+        selected_context["relationships"] = [
+            source["relationships"][p] for p in sorted(relationship_positions)
+        ]
+        selected_context["examples"] = [index["context"]["examples"][p] for p in example_positions]
+
+        if len(json.dumps(selected_context, ensure_ascii=False).encode()) > budget:
+            raise Controlled("INSUFFICIENT_CONTEXT")
+        return selected_context
+
+
+app = FastAPI(title="Private Text-to-SQL service", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.exception_handler(Controlled)
+async def controlled(req: Request, e: Controlled):
+    correlation = req.headers.get("x-correlation-id", "")[:100]
+    return JSONResponse(
+        status_code=e.status,
+        content={
+            "error": {
+                "code": e.code,
+                "message": "Generation could not be completed safely.",
+                "correlationId": correlation,
+                "retryable": e.code == "PROVIDER_UNAVAILABLE",
+                "details": {},
+            }
+        },
+    )
 
 
 async def generate_with_context(data: Input, execution_mode: str) -> Candidate:
     if not data.semanticContext.tables:
         raise Controlled("INSUFFICIENT_CONTEXT")
-    if execution_mode == "API" and not os.getenv("LLM_API_KEY", "").strip():
-        raise Controlled("PROVIDER_UNAVAILABLE", 503)
-    if execution_mode == "AUTO" and not os.getenv("LLM_API_KEY", "").strip():
-        execution_mode = "DETERMINISTIC"
     if execution_mode != "DETERMINISTIC":
         raise Controlled("PROVIDER_UNAVAILABLE", 503)
     context = SemanticContextSelector().select(data, offline=True)
@@ -483,7 +703,9 @@ async def generate(
     authorization: str = Header(default=""),
     x_execution_mode: str = Header(default="AUTO"),
 ):
-    verify_service_token(authorization)
+    token = os.getenv("PYTHON_AI_TOKEN", "")
+    if len(token) < 32 or not hmac.compare_digest(authorization, "Bearer " + token):
+        raise Controlled("UNAUTHENTICATED", 401)
     if x_execution_mode not in {"AUTO", "API", "DETERMINISTIC"}:
         raise Controlled("INVALID_REQUEST", 400)
     body = await req.body()
