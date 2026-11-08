@@ -396,3 +396,111 @@ def validate(candidate: Candidate, context: Context | dict[str, Any], dialect: s
     if candidate.confidence < 0.5:
         raise Controlled("LOW_CONFIDENCE")
     return candidate
+
+
+from copy import deepcopy
+from typing import Protocol
+
+from context_index import get_schema_index
+
+
+class TextToSqlModelClient(Protocol):
+    async def generate(self, request: Input, context: dict[str, Any]) -> Candidate: ...
+
+
+class DeterministicModelClient:
+    async def generate(self, request: Input, context: dict[str, Any]) -> Candidate:
+        matches = [
+            e
+            for e in context["examples"]
+            if e["sqlDialect"] == request.sqlDialect
+            and normalize(e["question"]) == normalize(request.question)
+        ]
+        if len(matches) > 1:
+            raise Controlled("LOW_CONFIDENCE")
+        if not matches:
+            raise Controlled("UNSUPPORTED_QUESTION")
+        e = matches[0]
+        metrics = e["selectedMetrics"]
+        dims = e["selectedDimensions"]
+        chart = e.get("chartRecommendation") or {
+            "type": "table",
+            "title": "Kết quả truy vấn",
+            "series": [],
+        }
+        return Candidate(
+            sql=e["sql"],
+            explanation="Chạy mẫu ngữ nghĩa đã khai báo khớp chính xác câu hỏi và dialect. Kết quả được Java đọc từ warehouse thật.",
+            assumptions=["Deterministic offline: chỉ hỗ trợ câu hỏi mẫu đã khai báo."],
+            selectedMetrics=metrics,
+            selectedDimensions=dims,
+            chartRecommendation=Chart.model_validate(chart),
+            confidence=1.0,
+            model="deterministic-semantic-examples",
+        )
+
+
+class SemanticContextSelector:
+    def select(self, request: Input, *, offline: bool = False) -> dict[str, Any]:
+        try:
+            budget = int(os.getenv("LLM_REQUEST_MAX_BYTES", "48000"))
+        except ValueError:
+            raise Controlled("INSUFFICIENT_CONTEXT")
+        if budget < 1000:
+            raise Controlled("INSUFFICIENT_CONTEXT")
+
+        index = get_schema_index(request.semanticContext.model_dump(by_alias=True))
+        source = deepcopy(index["context"])
+        source["examples"] = [
+            example
+            for example in source["examples"]
+            if example.get("sqlDialect") == request.sqlDialect
+        ]
+        if offline and not source["examples"]:
+            raise Controlled("UNSUPPORTED_QUESTION")
+        if len(json.dumps(source, ensure_ascii=False).encode("utf-8")) > budget:
+            raise Controlled("INSUFFICIENT_CONTEXT")
+        return source
+
+
+async def generate_with_context(data: Input, execution_mode: str) -> Candidate:
+    if not data.semanticContext.tables:
+        raise Controlled("INSUFFICIENT_CONTEXT")
+    if execution_mode == "API" and not os.getenv("LLM_API_KEY", "").strip():
+        raise Controlled("PROVIDER_UNAVAILABLE", 503)
+    if execution_mode == "AUTO" and not os.getenv("LLM_API_KEY", "").strip():
+        execution_mode = "DETERMINISTIC"
+    if execution_mode != "DETERMINISTIC":
+        raise Controlled("PROVIDER_UNAVAILABLE", 503)
+    context = SemanticContextSelector().select(data, offline=True)
+    client: TextToSqlModelClient = DeterministicModelClient()
+    return validate(await client.generate(data, context), context, data.sqlDialect.value)
+
+
+@app.post("/internal/v1/text-to-sql", response_model=Candidate, response_model_exclude_none=True)
+async def generate(
+    req: Request,
+    authorization: str = Header(default=""),
+    x_execution_mode: str = Header(default="AUTO"),
+):
+    verify_service_token(authorization)
+    if x_execution_mode not in {"AUTO", "API", "DETERMINISTIC"}:
+        raise Controlled("INVALID_REQUEST", 400)
+    body = await req.body()
+    if len(body) > 1048576:
+        raise Controlled("INVALID_REQUEST", 413)
+    try:
+        decoded = json.loads(body)
+    except (UnicodeDecodeError, ValueError):
+        raise Controlled("INVALID_REQUEST", 422)
+    if isinstance(decoded, dict) and decoded.get("sqlDialect") not in {
+        dialect.value for dialect in Dialect
+    }:
+        raise Controlled("SQL_DIALECT_ERROR", 422)
+    try:
+        data = Input.model_validate(decoded)
+    except ValidationError:
+        raise Controlled("INVALID_REQUEST", 422)
+    if req.headers.get("x-correlation-id") != data.correlationId:
+        raise Controlled("INVALID_REQUEST", 400)
+    return await generate_with_context(data, x_execution_mode)
