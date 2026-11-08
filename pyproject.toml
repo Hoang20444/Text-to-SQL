@@ -7,3 +7,6 @@ include = "(ai-service/.*|file-service/.*|data/scripts/.*)\\.py$"
 profile = "black"
 line_length = 100
 src_paths = ["ai-service", "file-service", "data/scripts"]
+
+[tool.pyrefly]
+search-path = ["ai-service", "data/scripts", "infra/local"]
