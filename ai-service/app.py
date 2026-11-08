@@ -225,3 +225,174 @@ def verify_service_token(authorization: str) -> None:
     token = os.getenv("PYTHON_AI_TOKEN", "")
     if len(token) < 32 or not hmac.compare_digest(authorization, "Bearer " + token):
         raise Controlled("UNAUTHENTICATED", 401)
+
+
+import re
+import unicodedata
+
+
+def sql_code_tokens(sql: str) -> list[str]:
+    """Return unquoted SQL tokens while rejecting comments and extra statements."""
+    tokens: list[str] = []
+    index = 0
+    quote: str | None = None
+    bracket = False
+    semicolon_seen = False
+    while index < len(sql):
+        char = sql[index]
+        following = sql[index + 1] if index + 1 < len(sql) else ""
+        if quote:
+            if char == quote:
+                if following == quote:
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+        if bracket:
+            if char == "]":
+                if following == "]":
+                    index += 2
+                    continue
+                bracket = False
+            index += 1
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            index += 1
+            continue
+        if char == "[":
+            bracket = True
+            index += 1
+            continue
+        if char == "-" and following == "-" or char == "/" and following == "*":
+            raise Controlled("INVALID_MODEL_RESPONSE", 502)
+        if char == "#":
+            raise Controlled("INVALID_MODEL_RESPONSE", 502)
+        if char == ";":
+            if semicolon_seen or sql[index + 1 :].strip():
+                raise Controlled("INVALID_MODEL_RESPONSE", 502)
+            semicolon_seen = True
+            index += 1
+            continue
+        if semicolon_seen and not char.isspace():
+            raise Controlled("INVALID_MODEL_RESPONSE", 502)
+        if char.isalpha() or char == "_":
+            end = index + 1
+            while end < len(sql) and (sql[end].isalnum() or sql[end] in "_$#"):
+                end += 1
+            tokens.append(sql[index:end].casefold())
+            index = end
+            continue
+        index += 1
+    if quote or bracket:
+        raise Controlled("INVALID_MODEL_RESPONSE", 502)
+    return tokens
+
+
+def normalize(s: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", s).casefold().strip().rstrip("?!.").split())
+
+
+def validate(candidate: Candidate, context: Context | dict[str, Any], dialect: str) -> Candidate:
+    if isinstance(context, Context):
+        tables = [table.model_dump(by_alias=True) for table in context.tables]
+        metrics = [metric.model_dump() for metric in context.metrics]
+        dimensions = [dimension.model_dump() for dimension in context.dimensions]
+    else:
+        tables = context["tables"]
+        metrics = context["metrics"]
+        dimensions = context["dimensions"]
+    if candidate.chartRecommendation.type not in {
+        "table",
+        "number",
+        "bar",
+        "grouped-bar",
+        "line",
+        "area",
+        "pie",
+    }:
+        raise Controlled("INVALID_MODEL_RESPONSE", 502)
+    if not set(candidate.selectedMetrics) <= {metric["name"] for metric in metrics}:
+        raise Controlled("INVALID_MODEL_RESPONSE", 502)
+    if not set(candidate.selectedDimensions) <= {dimension["name"] for dimension in dimensions}:
+        raise Controlled("INVALID_MODEL_RESPONSE", 502)
+    tokens = sql_code_tokens(candidate.sql)
+    if not tokens or tokens[0] not in {"select", "with"}:
+        raise Controlled("INVALID_MODEL_RESPONSE", 502)
+    forbidden = {
+        "alter",
+        "attach",
+        "backup",
+        "call",
+        "copy",
+        "create",
+        "delete",
+        "detach",
+        "drop",
+        "execute",
+        "exec",
+        "grant",
+        "insert",
+        "into",
+        "merge",
+        "openquery",
+        "openrowset",
+        "opendatasource",
+        "outfile",
+        "prepare",
+        "read",
+        "reconfigure",
+        "restore",
+        "revoke",
+        "shutdown",
+        "truncate",
+        "update",
+        "use",
+        "vacuum",
+        "write",
+    }
+    forbidden_functions = {
+        "benchmark",
+        "load_file",
+        "pg_read_file",
+        "pg_read_binary_file",
+        "pg_sleep",
+        "sleep",
+        "xp_cmdshell",
+        "xp_dirtree",
+        "sys_exec",
+        "dblink",
+        "lo_import",
+        "load_extension",
+        "utl_http",
+        "utl_file",
+    }
+    if forbidden.intersection(tokens) or forbidden_functions.intersection(tokens):
+        raise Controlled("INVALID_MODEL_RESPONSE", 502)
+    if dialect == "SQL_SERVER" and "limit" in tokens:
+        raise Controlled("SQL_DIALECT_ERROR", 502)
+    if dialect != "SQL_SERVER" and re.search(r"\bSELECT\s+TOP(?:\s|\()", candidate.sql, re.I):
+        raise Controlled("SQL_DIALECT_ERROR", 502)
+    if dialect != "MYSQL" and "`" in candidate.sql:
+        raise Controlled("SQL_DIALECT_ERROR", 502)
+    available_columns = {column["name"] for table in tables for column in table["columns"]}
+    available_columns.update(metric["name"] for metric in metrics)
+    available_columns.update(dimension["name"] for dimension in dimensions)
+    output_aliases = {
+        alias.strip('"`[]').casefold()
+        for alias in re.findall(
+            r"\bAS\s+(\[[^]]+\]|`[^`]+`|\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_$#]*)",
+            candidate.sql,
+            re.IGNORECASE,
+        )
+    }
+    available_columns.update(output_aliases)
+    chart = candidate.chartRecommendation
+    if chart.x is not None and chart.x not in available_columns:
+        raise Controlled("INVALID_MODEL_RESPONSE", 502)
+    if any(series.column not in available_columns for series in chart.series):
+        raise Controlled("INVALID_MODEL_RESPONSE", 502)
+    if candidate.confidence < 0.5:
+        raise Controlled("LOW_CONFIDENCE")
+    return candidate
