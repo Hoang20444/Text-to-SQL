@@ -1,0 +1,9 @@
+{
+  "subject": "6f1c2a7e-3b9d-4c51-9a0e-2d7f8b1c4e90",
+  "username": "viewer",
+  "displayName": "Demo Viewer",
+  "email": "viewer@local.invalid",
+  "roles": ["VIEWER"],
+  "warehouseIds": ["wh-chinook-pg"],
+  "expiresAt": "2026-11-09T08:05:00Z"
+}

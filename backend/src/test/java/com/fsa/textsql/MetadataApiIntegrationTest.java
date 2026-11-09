@@ -12,14 +12,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fsa.textsql.bootstrap.LocalChinookBootstrap;
+import com.fsa.textsql.security.TestJwt;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -31,6 +35,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @SpringBootTest(properties = {"nla.local-bootstrap.enabled=true", "spring.config.import="})
 @AutoConfigureMockMvc
 @Testcontainers
+@Import(TestJwt.DecoderConfig.class)
 class MetadataApiIntegrationTest {
 
   @Container @ServiceConnection
@@ -39,6 +44,16 @@ class MetadataApiIntegrationTest {
   @Autowired MockMvc mvc;
   @Autowired JdbcClient jdbc;
   @Autowired LocalChinookBootstrap bootstrap;
+
+  // These tests cover the metadata APIs themselves, so they call as ADMIN (sees every warehouse).
+  // Role and warehouse authorization is covered by AuthorizationIntegrationTest.
+  private static MockHttpServletRequestBuilder adminGet(String url) {
+    return get(url).header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin()));
+  }
+
+  private static MockHttpServletRequestBuilder adminPost(String url) {
+    return post(url).header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin()));
+  }
 
   @Test
   void flywayCreatesMetadataTables() {
@@ -49,12 +64,13 @@ class MetadataApiIntegrationTest {
             .query(String.class)
             .list();
 
-    assertThat(tables).contains("warehouses", "datasets", "flyway_schema_history");
+    assertThat(tables)
+        .contains("warehouses", "datasets", "warehouse_access", "flyway_schema_history");
   }
 
   @Test
   void listsThreeEnginesAsSafeSummaries() throws Exception {
-    mvc.perform(get("/api/v1/warehouses").param("sort", "name").param("direction", "ASC"))
+    mvc.perform(adminGet("/api/v1/warehouses").param("sort", "name").param("direction", "ASC"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.totalItems").value(3))
         .andExpect(jsonPath("$.totalPages").value(1))
@@ -73,31 +89,31 @@ class MetadataApiIntegrationTest {
   @Test
   void responseNeverContainsCredentialReferenceOrSecretName() throws Exception {
     String body =
-        mvc.perform(get("/api/v1/warehouses")).andReturn().getResponse().getContentAsString();
+        mvc.perform(adminGet("/api/v1/warehouses")).andReturn().getResponse().getContentAsString();
 
     assertThat(body).doesNotContain("credentialReference", "NLA_CHINOOK", "nla_reader", "env:");
   }
 
   @Test
   void filtersWarehousesByEngineAndSearch() throws Exception {
-    mvc.perform(get("/api/v1/warehouses").param("engine", "MYSQL"))
+    mvc.perform(adminGet("/api/v1/warehouses").param("engine", "MYSQL"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.totalItems").value(1))
         .andExpect(jsonPath("$.items[0].warehouseId").value("wh-chinook-mysql"));
 
-    mvc.perform(get("/api/v1/warehouses").param("search", "sql server"))
+    mvc.perform(adminGet("/api/v1/warehouses").param("search", "sql server"))
         .andExpect(jsonPath("$.totalItems").value(1))
         .andExpect(jsonPath("$.items[0].engine").value("SQL_SERVER"));
 
     // LIKE wildcards are matched literally, so "%" must not match every row.
-    mvc.perform(get("/api/v1/warehouses").param("search", "%"))
+    mvc.perform(adminGet("/api/v1/warehouses").param("search", "%"))
         .andExpect(jsonPath("$.totalItems").value(0));
   }
 
   @Test
   void paginatesWithStableOrder() throws Exception {
     mvc.perform(
-            get("/api/v1/warehouses")
+            adminGet("/api/v1/warehouses")
                 .param("pageSize", "2")
                 .param("page", "2")
                 .param("sort", "name")
@@ -111,7 +127,7 @@ class MetadataApiIntegrationTest {
 
   @Test
   void listsDatasetsWithQualifiedAllowlistAndVersionsFromDataFiles() throws Exception {
-    mvc.perform(get("/api/v1/datasets").param("warehouseId", "wh-chinook-pg"))
+    mvc.perform(adminGet("/api/v1/datasets").param("warehouseId", "wh-chinook-pg"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.totalItems").value(1))
         .andExpect(jsonPath("$.items[0].datasetId").value("ds-chinook-pg"))
@@ -123,7 +139,7 @@ class MetadataApiIntegrationTest {
         .andExpect(jsonPath("$.items[0].schemaVersion").value("chinook-1.4.5"))
         .andExpect(jsonPath("$.items[0].updatedAt", containsString("Z")));
 
-    mvc.perform(get("/api/v1/datasets").param("warehouseId", "wh-chinook-mssql"))
+    mvc.perform(adminGet("/api/v1/datasets").param("warehouseId", "wh-chinook-mssql"))
         .andExpect(jsonPath("$.items[0].allowedTables[*].name").value(hasItems("InvoiceLine")))
         .andExpect(jsonPath("$.items[0].allowedSchemas[0]").value("dbo"));
   }
@@ -141,7 +157,7 @@ class MetadataApiIntegrationTest {
 
   @Test
   void invalidParametersReturnErrorEnvelopeWithCorrelationId() throws Exception {
-    mvc.perform(get("/api/v1/warehouses").param("engine", "ORACLE"))
+    mvc.perform(adminGet("/api/v1/warehouses").param("engine", "ORACLE"))
         .andExpect(status().isBadRequest())
         .andExpect(header().exists("X-Correlation-ID"))
         .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"))
@@ -149,11 +165,11 @@ class MetadataApiIntegrationTest {
         .andExpect(jsonPath("$.error.details.parameter").value("engine"))
         .andExpect(jsonPath("$.error.correlationId").exists());
 
-    mvc.perform(get("/api/v1/datasets").param("pageSize", "500"))
+    mvc.perform(adminGet("/api/v1/datasets").param("pageSize", "500"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
 
-    mvc.perform(get("/api/v1/datasets").param("unexpected", "1"))
+    mvc.perform(adminGet("/api/v1/datasets").param("unexpected", "1"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.error.details.parameters[0]").value("unexpected"));
   }
@@ -161,24 +177,24 @@ class MetadataApiIntegrationTest {
   @Test
   void echoesSafeIncomingCorrelationIdInHeaderAndBody() throws Exception {
     mvc.perform(
-            get("/api/v1/warehouses")
+            adminGet("/api/v1/warehouses")
                 .param("status", "BROKEN")
                 .header("X-Correlation-ID", "corr-test-123"))
         .andExpect(header().string("X-Correlation-ID", "corr-test-123"))
         .andExpect(jsonPath("$.error.correlationId").value("corr-test-123"));
 
     // An unsafe incoming ID (e.g. log injection) is replaced with a generated one.
-    mvc.perform(get("/api/v1/warehouses").header("X-Correlation-ID", "bad id\r\ninjected"))
+    mvc.perform(adminGet("/api/v1/warehouses").header("X-Correlation-ID", "bad id\r\ninjected"))
         .andExpect(header().string("X-Correlation-ID", containsString("corr-")));
   }
 
   @Test
   void unknownRouteAndWrongMethodUseErrorEnvelope() throws Exception {
-    mvc.perform(get("/api/v1/does-not-exist"))
+    mvc.perform(adminGet("/api/v1/does-not-exist"))
         .andExpect(status().isNotFound())
         .andExpect(jsonPath("$.error.code").value("RESOURCE_NOT_FOUND"));
 
-    mvc.perform(post("/api/v1/warehouses"))
+    mvc.perform(adminPost("/api/v1/warehouses"))
         .andExpect(status().isMethodNotAllowed())
         .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
   }

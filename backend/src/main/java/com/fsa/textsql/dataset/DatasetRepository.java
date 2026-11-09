@@ -55,10 +55,20 @@ public class DatasetRepository {
     return rows == 1;
   }
 
-  /** Filters: warehouseId, status (validated enum name) and search on name/description. */
-  public PageResponse<Dataset> findPage(PageQuery query) {
+  /**
+   * Filters: warehouseId, status (validated enum name) and search on name/description.
+   *
+   * @param accessSubject when not null, only datasets of warehouses granted to this subject
+   */
+  public PageResponse<Dataset> findPage(PageQuery query, String accessSubject) {
     List<String> where = new ArrayList<>();
     Map<String, Object> params = new HashMap<>();
+    if (accessSubject != null) {
+      where.add(
+          "warehouse_id IN (SELECT warehouse_id FROM warehouse_access"
+              + " WHERE subject = :accessSubject)");
+      params.put("accessSubject", accessSubject);
+    }
     if (query.filters().containsKey("warehouseId")) {
       where.add("warehouse_id = :warehouseId");
       params.put("warehouseId", query.filters().get("warehouseId"));

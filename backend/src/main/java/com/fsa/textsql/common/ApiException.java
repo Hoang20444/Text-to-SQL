@@ -32,6 +32,10 @@ public class ApiException extends RuntimeException {
     return new ApiException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", message, false, details);
   }
 
+  public static ApiException forbidden(String message, Map<String, Object> details) {
+    return new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", message, false, details);
+  }
+
   public static ApiException notFound(String message) {
     return new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", message, false, Map.of());
   }

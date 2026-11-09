@@ -1,7 +1,9 @@
 package com.fsa.textsql.warehouse;
 
+import com.fsa.textsql.access.WarehouseAccessService;
 import com.fsa.textsql.common.PageQuery;
 import com.fsa.textsql.common.PageResponse;
+import com.fsa.textsql.security.CurrentUser;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,17 +24,22 @@ public class WarehouseController {
   private static final Set<String> FILTERS = Set.of("engine", "status", "search");
 
   private final WarehouseRepository warehouses;
+  private final WarehouseAccessService access;
 
-  public WarehouseController(WarehouseRepository warehouses) {
+  public WarehouseController(WarehouseRepository warehouses, WarehouseAccessService access) {
     this.warehouses = warehouses;
+    this.access = access;
   }
 
-  /** GET /api/v1/warehouses: Page of safe summaries; filters engine, status, search. */
+  /**
+   * GET /api/v1/warehouses: Page of safe summaries; filters engine, status, search. Only the
+   * warehouses the caller may access are listed (ADMIN sees all).
+   */
   @GetMapping
   public PageResponse<WarehouseSummary> list(@RequestParam Map<String, String> params) {
     PageQuery query = PageQuery.parse(params, SORT_COLUMNS, "createdAt", FILTERS);
     query.requireEnum("engine", Engine.class);
     query.requireEnum("status", WarehouseStatus.class);
-    return warehouses.findPage(query);
+    return warehouses.findPage(query, access.listScope(CurrentUser.require()));
   }
 }

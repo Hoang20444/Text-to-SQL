@@ -53,10 +53,22 @@ public class WarehouseRepository {
         > 0;
   }
 
-  /** Filters: engine, status (already validated enum names) and search on name. */
-  public PageResponse<WarehouseSummary> findPage(PageQuery query) {
+  public List<String> allIds() {
+    return jdbc.sql("SELECT id FROM warehouses ORDER BY id").query(String.class).list();
+  }
+
+  /**
+   * Filters: engine, status (already validated enum names) and search on name.
+   *
+   * @param accessSubject when not null, only warehouses granted to this subject are returned
+   */
+  public PageResponse<WarehouseSummary> findPage(PageQuery query, String accessSubject) {
     List<String> where = new ArrayList<>();
     Map<String, Object> params = new HashMap<>();
+    if (accessSubject != null) {
+      where.add("id IN (SELECT warehouse_id FROM warehouse_access WHERE subject = :accessSubject)");
+      params.put("accessSubject", accessSubject);
+    }
     if (query.filters().containsKey("engine")) {
       where.add("engine = :engine");
       params.put("engine", query.filters().get("engine"));

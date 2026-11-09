@@ -2,6 +2,8 @@ package com.fsa.textsql.bootstrap;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fsa.textsql.access.WarehouseAccessRepository;
+import com.fsa.textsql.bootstrap.LocalBootstrapProperties.AccessSeed;
 import com.fsa.textsql.bootstrap.LocalBootstrapProperties.DatasetSeed;
 import com.fsa.textsql.bootstrap.LocalBootstrapProperties.WarehouseSeed;
 import com.fsa.textsql.dataset.DatasetRegistration;
@@ -40,6 +42,7 @@ public class LocalChinookBootstrap implements ApplicationRunner {
   private final LocalBootstrapProperties properties;
   private final WarehouseRepository warehouses;
   private final DatasetRepository datasets;
+  private final WarehouseAccessRepository access;
   private final TransactionTemplate tx;
   private final ObjectMapper json;
   private final Path dataRoot;
@@ -48,12 +51,14 @@ public class LocalChinookBootstrap implements ApplicationRunner {
       LocalBootstrapProperties properties,
       WarehouseRepository warehouses,
       DatasetRepository datasets,
+      WarehouseAccessRepository access,
       TransactionTemplate tx,
       ObjectMapper json,
       @Value("${nla.data-root:}") String dataRoot) {
     this.properties = properties;
     this.warehouses = warehouses;
     this.datasets = datasets;
+    this.access = access;
     this.tx = tx;
     this.json = json;
     this.dataRoot = resolveDataRoot(dataRoot, Path.of("").toAbsolutePath());
@@ -97,6 +102,25 @@ public class LocalChinookBootstrap implements ApplicationRunner {
           seed.id(),
           seed.engine(),
           Boolean.TRUE.equals(inserted) ? "registered" : "already registered");
+    }
+    grantSampleAccess();
+  }
+
+  /** Grants the local Keycloak accounts their sample warehouses (idempotent). */
+  private void grantSampleAccess() {
+    for (AccessSeed seed : properties.access()) {
+      if (seed.subject() == null || seed.subject().isBlank()) {
+        continue; // infra/local/oidc.py init has not been run yet
+      }
+      Integer added =
+          tx.execute(
+              status ->
+                  (int)
+                      seed.warehouses().stream()
+                          .filter(id -> access.grantIfAbsent(seed.subject(), id))
+                          .count());
+      log.info(
+          "Local warehouse grants: {} new for {} warehouse(s)", added, seed.warehouses().size());
     }
   }
 
