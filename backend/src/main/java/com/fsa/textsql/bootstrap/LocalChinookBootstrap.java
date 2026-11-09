@@ -95,7 +95,9 @@ public class LocalChinookBootstrap implements ApplicationRunner {
               status -> {
                 boolean newWarehouse = warehouses.insertIfAbsent(warehouse);
                 boolean newDataset = datasets.insertIfAbsent(dataset);
-                return newWarehouse || newDataset;
+                boolean newModel =
+                    datasets.setSemanticModelIfEmpty(dataset.id(), semantic.toString());
+                return newWarehouse || newDataset || newModel;
               });
       log.info(
           "Local warehouse {} ({}) {}",

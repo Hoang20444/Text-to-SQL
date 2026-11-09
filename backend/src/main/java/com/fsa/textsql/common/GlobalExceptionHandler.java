@@ -5,6 +5,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -32,6 +34,26 @@ public class GlobalExceptionHandler {
                 "Tham số không hợp lệ: " + e.getName(),
                 false,
                 Map.of("parameter", e.getName())));
+  }
+
+  @ExceptionHandler(HttpMessageNotReadableException.class)
+  ResponseEntity<ErrorResponse> handleUnreadable(HttpMessageNotReadableException e) {
+    // Covers malformed JSON, wrong types and unknown fields; parser details are not echoed.
+    return ResponseEntity.badRequest()
+        .body(
+            ErrorResponse.of(
+                "INVALID_REQUEST",
+                "Nội dung yêu cầu không hợp lệ hoặc chứa trường không được hỗ trợ.",
+                false,
+                Map.of()));
+  }
+
+  @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+  ResponseEntity<ErrorResponse> handleMediaType(HttpMediaTypeNotSupportedException e) {
+    return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+        .body(
+            ErrorResponse.of(
+                "INVALID_REQUEST", "Chỉ hỗ trợ Content-Type application/json.", false, Map.of()));
   }
 
   @ExceptionHandler(NoResourceFoundException.class)

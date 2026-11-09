@@ -8,6 +8,7 @@ Thư mục dành cho thành viên Backend triển khai theo Sprint Backlog (`doc
 |---|---|
 | T-1.1.1 | Spring Boot 3.5 + Flyway, Metadata DB (`warehouses`, `datasets`), `GET /api/v1/warehouses`, `GET /api/v1/datasets`, error envelope + `X-Correlation-ID` |
 | T-1.2.1 | Keycloak realm `nla` với 3 tài khoản `admin`/`analyst`/`viewer`, Spring Security kiểm tra chữ ký JWT, `GET /api/v1/auth/session`, chặn quyền theo từng kho (bảng `warehouse_access`): không token → 401, sai kho → 403 |
+| T-1.3.2 | `POST /api/v1/query`: kiểm tra quyền kho → đọc cột thật của các bảng được phép → gọi Python AI lấy SQL ứng viên → kiểm tra chỉ một câu SELECT → chạy chỉ đọc (JDBC) trên PostgreSQL/MySQL/SQL Server → chuẩn hóa kết quả → lưu `query_history`. Kèm `GET /api/v1/datasets/{id}/examples` (câu hỏi gợi ý theo tập dữ liệu) |
 
 ## Cấu hình
 
@@ -26,6 +27,9 @@ Backend đọc cấu hình từ biến môi trường hoặc các file trong `.l
 | `OIDC_AUDIENCE` | Audience bắt buộc trong token (mặc định `nla-api`) |
 | `OIDC_JWK_SET_URI` | Chỉ cần khi backend gọi Keycloak qua địa chỉ khác issuer (ví dụ trong Docker) |
 | `NLA_LOCAL_ANALYST_SUBJECT`, `NLA_LOCAL_VIEWER_SUBJECT` | ID tài khoản mẫu để cấp quyền kho khi chạy local |
+| `PYTHON_AI_URL` | Địa chỉ Python AI service (mặc định `http://127.0.0.1:8000`) |
+| `PYTHON_AI_TOKEN` | Service token dùng chung giữa Java và Python (≥ 32 ký tự). Phải đặt **cùng giá trị** cho cả hai tiến trình; không có trong Git |
+| `NLA_MYSQL_RSA_PUBLIC_KEY` | File khóa RSA của MySQL do `docker_chinook.py` lưu (dùng để đăng nhập MySQL 8 không cần TLS) |
 
 Mật khẩu kho dữ liệu không lưu trong DB: bảng `warehouses` chỉ giữ `credential_reference` dạng `env:NLA_CHINOOK_PG_PASSWORD`, và API không bao giờ trả trường này. Backend không lưu mật khẩu người dùng: chỉ kiểm tra token do Keycloak ký.
 
@@ -53,10 +57,26 @@ python data/scripts/docker_chinook.py provision
 python infra/local/oidc.py init
 python infra/local/oidc.py up
 
-# 3. Chạy backend (cổng 8080)
+# 3. Python AI service (cổng 8000) - cùng PYTHON_AI_TOKEN với backend
+export PYTHON_AI_TOKEN=<chuỗi ngẫu nhiên tối thiểu 32 ký tự>
+cd ai-service && pip install -r requirements.txt
+uvicorn app:app --host 127.0.0.1 --port 8000
+
+# 4. Chạy backend (cổng 8080), terminal khác, cùng PYTHON_AI_TOKEN
 cd backend
 mvn spring-boot:run
 ```
+
+Hỏi một câu mẫu (Sprint 1 dùng chế độ `DETERMINISTIC`: Python chỉ trả SQL cho câu hỏi khớp một câu mẫu của tập dữ liệu, xem `GET /api/v1/datasets/{id}/examples`):
+
+```bash
+TOKEN=$(python infra/local/oidc.py token analyst)
+curl -X POST http://localhost:8080/api/v1/query \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"warehouseId":"wh-chinook-mysql","datasetId":"ds-chinook-mysql","question":"How many tracks are in the catalog?","mode":"DETERMINISTIC"}'
+```
+
+`VIEWER` chỉ được xem, không được chạy truy vấn (403). Kết quả trả tối đa 1000 dòng (`returnedRowCount`, `truncated`), `rows` chứa 100 dòng đầu; DECIMAL/BIGINT là chuỗi để không mất độ chính xác, thời gian là ISO-8601 UTC.
 
 Kiểm tra nhanh (lấy token của tài khoản mẫu từ Keycloak local):
 

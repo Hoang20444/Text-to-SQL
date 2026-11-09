@@ -31,6 +31,9 @@ spring:
       enabled: false
   jackson:
     default-property-inclusion: always
+    deserialization:
+      # Unknown request fields are rejected (contract: detect drift, no smuggled SQL/secrets).
+      fail-on-unknown-properties: true
 
 logging:
   pattern:
@@ -44,6 +47,20 @@ nla:
     # through a different host than the public issuer (e.g. inside Docker).
     jwk-set-uri: ${OIDC_JWK_SET_URI:}
     audience: ${OIDC_AUDIENCE:nla-api}
+  ai:
+    # Private Python AI service (ai-service/). The token is shared with it via PYTHON_AI_TOKEN.
+    url: ${PYTHON_AI_URL:http://127.0.0.1:8000}
+    token: ${PYTHON_AI_TOKEN:}
+    timeout-seconds: 55
+  query:
+    # Bounded read-only execution (docs/contracts/java-python.md baseline).
+    max-rows: 1000
+    statement-timeout-seconds: 15
+    login-timeout-seconds: 5
+    # Hosts the backend may open warehouse connections to (comma separated). Empty = any.
+    allowed-hosts: ${WAREHOUSE_ALLOWED_HOSTS:}
+    # MySQL 8 caching_sha2 over plain TCP needs the server RSA key; docker_chinook.py saves it.
+    mysql-rsa-public-key: ${NLA_MYSQL_RSA_PUBLIC_KEY:}
   # Root of the repository data/ folder (sample provenance files such as data/chinook).
   # Empty = auto-detect ./data or ../data from the working directory.
   data-root: ${NLA_DATA_ROOT:}

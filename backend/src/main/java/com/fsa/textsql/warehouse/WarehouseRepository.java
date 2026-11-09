@@ -53,6 +53,30 @@ public class WarehouseRepository {
         > 0;
   }
 
+  public java.util.Optional<WarehouseConnection> findConnection(String id) {
+    return jdbc.sql(
+            """
+            SELECT id, name, engine, status, host, port, database_name, default_schema,
+                   username, credential_reference
+            FROM warehouses WHERE id = :id
+            """)
+        .param("id", id)
+        .query(
+            (rs, n) ->
+                new WarehouseConnection(
+                    rs.getString("id"),
+                    rs.getString("name"),
+                    Engine.valueOf(rs.getString("engine")),
+                    WarehouseStatus.valueOf(rs.getString("status")),
+                    rs.getString("host"),
+                    rs.getInt("port"),
+                    rs.getString("database_name"),
+                    rs.getString("default_schema"),
+                    rs.getString("username"),
+                    rs.getString("credential_reference")))
+        .optional();
+  }
+
   public List<String> allIds() {
     return jdbc.sql("SELECT id FROM warehouses ORDER BY id").query(String.class).list();
   }

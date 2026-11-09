@@ -56,6 +56,40 @@ public class DatasetRepository {
   }
 
   /**
+   * Stores the semantic model snapshot only while the dataset still has none, so restarts never
+   * overwrite a model changed by an admin.
+   */
+  public boolean setSemanticModelIfEmpty(String datasetId, String semanticModelJson) {
+    return jdbc.sql(
+                """
+                UPDATE datasets SET semantic_model = CAST(:model AS jsonb), updated_at = now()
+                WHERE id = :id AND semantic_model = '{}'::jsonb
+                """)
+            .param("model", semanticModelJson)
+            .param("id", datasetId)
+            .update()
+        == 1;
+  }
+
+  public java.util.Optional<Dataset> findById(String id) {
+    return jdbc.sql(
+            "SELECT id, warehouse_id, name, description, status, allowed_schemas::text AS schemas,"
+                + " allowed_tables::text AS tables, semantic_version, schema_version, updated_at"
+                + " FROM datasets WHERE id = :id")
+        .param("id", id)
+        .query(this::map)
+        .optional();
+  }
+
+  /** Raw semantic model JSON of a dataset ("{}" when not configured). */
+  public java.util.Optional<String> semanticModel(String id) {
+    return jdbc.sql("SELECT semantic_model::text FROM datasets WHERE id = :id")
+        .param("id", id)
+        .query(String.class)
+        .optional();
+  }
+
+  /**
    * Filters: warehouseId, status (validated enum name) and search on name/description.
    *
    * @param accessSubject when not null, only datasets of warehouses granted to this subject
