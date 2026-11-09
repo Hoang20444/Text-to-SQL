@@ -28,12 +28,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * Runs the real application against a PostgreSQL 16 metadata database: Flyway migrations, the local
  * Chinook bootstrap and the list APIs all go through real persistence.
  */
-@SpringBootTest(
-    properties = {
-      "nla.local-bootstrap.enabled=true",
-      "nla.data-root=../data",
-      "spring.config.import="
-    })
+@SpringBootTest(properties = {"nla.local-bootstrap.enabled=true", "spring.config.import="})
 @AutoConfigureMockMvc
 @Testcontainers
 class MetadataApiIntegrationTest {

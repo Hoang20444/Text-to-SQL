@@ -17,7 +17,7 @@ Backend đọc cấu hình từ biến môi trường hoặc file `.local/docker
 | `METADATA_JDBC_URL`, `METADATA_USERNAME`, `METADATA_PASSWORD` | Metadata DB `nla_metadata` (tài khoản `nla_app`) |
 | `CHINOOK_DOCKER=true` | Tự đăng ký 3 kho Chinook local (PostgreSQL, MySQL, SQL Server) khi khởi động |
 | `NLA_MYSQL_PORT` | Cổng MySQL nếu khác `53306` |
-| `NLA_DATA_ROOT` | Đường dẫn tới thư mục `data/` của repo (mặc định `../data`) |
+| `NLA_DATA_ROOT` | Đường dẫn tới thư mục `data/` của repo. Bỏ trống thì tự tìm `./data` hoặc `../data`, nên chạy từ gốc repo hay từ `backend/` đều được |
 
 Mật khẩu kho dữ liệu không lưu trong DB: bảng `warehouses` chỉ giữ `credential_reference` dạng `env:NLA_CHINOOK_PG_PASSWORD`, và API không bao giờ trả trường này.
 

@@ -50,13 +50,32 @@ public class LocalChinookBootstrap implements ApplicationRunner {
       DatasetRepository datasets,
       TransactionTemplate tx,
       ObjectMapper json,
-      @Value("${nla.data-root}") String dataRoot) {
+      @Value("${nla.data-root:}") String dataRoot) {
     this.properties = properties;
     this.warehouses = warehouses;
     this.datasets = datasets;
     this.tx = tx;
     this.json = json;
-    this.dataRoot = Path.of(dataRoot);
+    this.dataRoot = resolveDataRoot(dataRoot, Path.of("").toAbsolutePath());
+  }
+
+  /**
+   * Uses NLA_DATA_ROOT when set. Otherwise finds the repository data/ folder from the working
+   * directory, so the app starts the same whether an IDE runs it from the repo root or backend/.
+   */
+  static Path resolveDataRoot(String configured, Path workingDir) {
+    if (configured != null && !configured.isBlank()) {
+      return Path.of(configured);
+    }
+    for (Path candidate : List.of(workingDir.resolve("data"), workingDir.resolve("../data"))) {
+      if (Files.isDirectory(candidate.resolve("chinook"))) {
+        return candidate.normalize();
+      }
+    }
+    throw new IllegalStateException(
+        "Cannot find the repository data/ folder from "
+            + workingDir
+            + "; run from the repository root or backend/, or set NLA_DATA_ROOT");
   }
 
   @Override

@@ -35,7 +35,8 @@ logging:
 
 nla:
   # Root of the repository data/ folder (sample provenance files such as data/chinook).
-  data-root: ${NLA_DATA_ROOT:../data}
+  # Empty = auto-detect ./data or ../data from the working directory.
+  data-root: ${NLA_DATA_ROOT:}
   # Registers the three local Chinook warehouses on startup. Enabled by CHINOOK_DOCKER=true,
   # which docker_chinook.py writes after the databases are provisioned and verified.
   local-bootstrap:
