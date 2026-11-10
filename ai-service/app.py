@@ -842,8 +842,8 @@ class SemanticContextSelector:
                 if target not in previous:
                     raise Controlled("INSUFFICIENT_CONTEXT")
                 current = target
-                while previous[current] is not None:
-                    parent, relationship_position = previous[current]
+                while (step := previous[current]) is not None:
+                    parent, relationship_position = step
                     required_tables.add(current)
                     required_tables.add(parent)
                     relationship_positions.add(relationship_position)
