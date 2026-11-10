@@ -32,7 +32,7 @@ public class WarehouseConnector {
 
   public Connection openReadOnly(WarehouseConnection w) {
     if (!properties.allowedHostSet().isEmpty() && !properties.allowedHostSet().contains(w.host())) {
-      throw connectionError();
+      throw connectionError("HOST_NOT_ALLOWED");
     }
     Properties props = new Properties();
     props.setProperty("user", w.username());
@@ -60,8 +60,27 @@ public class WarehouseConnector {
           w.engine(),
           e.getSQLState(),
           e.getErrorCode());
-      throw connectionError();
+      throw connectionError(reason(e));
     }
+  }
+
+  /**
+   * Classifies a connection failure from SQLState/vendor code only, so the user learns what to fix
+   * without the driver message (which may contain host, user or other details).
+   */
+  static String reason(SQLException e) {
+    String state = e.getSQLState() == null ? "" : e.getSQLState();
+    int code = e.getErrorCode();
+    if (state.startsWith("28") || code == 18456 || code == 1045) {
+      return "AUTHENTICATION_FAILED";
+    }
+    if (state.equals("3D000") || code == 1049 || code == 4060) {
+      return "DATABASE_NOT_FOUND";
+    }
+    if (state.startsWith("08")) {
+      return "HOST_UNREACHABLE";
+    }
+    return "CONNECTION_FAILED";
   }
 
   String jdbcUrl(WarehouseConnection w) {
@@ -104,12 +123,24 @@ public class WarehouseConnector {
     };
   }
 
-  private static ApiException connectionError() {
+  private static ApiException connectionError(String reason) {
+    String message =
+        switch (reason) {
+          case "AUTHENTICATION_FAILED" ->
+              "Không kết nối được kho dữ liệu: sai tên đăng nhập hoặc mật khẩu.";
+          case "DATABASE_NOT_FOUND" ->
+              "Không kết nối được kho dữ liệu: cơ sở dữ liệu không tồn tại hoặc không có quyền.";
+          case "HOST_UNREACHABLE" ->
+              "Không kết nối được kho dữ liệu: máy chủ hoặc cổng không phản hồi.";
+          case "HOST_NOT_ALLOWED" ->
+              "Không kết nối được kho dữ liệu: máy chủ không nằm trong danh sách được phép.";
+          default -> "Không kết nối được kho dữ liệu.";
+        };
     return new ApiException(
         HttpStatus.SERVICE_UNAVAILABLE,
         "WAREHOUSE_CONNECTION_ERROR",
-        "Không kết nối được kho dữ liệu.",
-        true,
-        Map.of());
+        message,
+        !reason.equals("HOST_NOT_ALLOWED") && !reason.equals("AUTHENTICATION_FAILED"),
+        Map.of("reason", reason));
   }
 }

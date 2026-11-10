@@ -20,12 +20,17 @@ public class WarehouseService {
   private final WarehouseRepository warehouses;
   private final WarehouseAccessService access;
   private final QueryProperties limits;
+  private final com.fsa.textsql.query.WarehouseConnector connector;
 
   public WarehouseService(
-      WarehouseRepository warehouses, WarehouseAccessService access, QueryProperties limits) {
+      WarehouseRepository warehouses,
+      WarehouseAccessService access,
+      QueryProperties limits,
+      com.fsa.textsql.query.WarehouseConnector connector) {
     this.warehouses = warehouses;
     this.access = access;
     this.limits = limits;
+    this.connector = connector;
   }
 
   /**
@@ -87,6 +92,54 @@ public class WarehouseService {
             .findDetail(warehouseId)
             .orElseThrow(() -> ApiException.notFound("Không tìm thấy kho dữ liệu."));
     return user.isAdmin() ? detail : detail.withoutConnection();
+  }
+
+  /**
+   * Opens a read-only connection with the reader account and runs a trivial query. Success marks
+   * the warehouse ACTIVE, failure UNAVAILABLE (DISABLED stays DISABLED). Errors are sanitized.
+   */
+  public ConnectionTestResult testConnection(String warehouseId, CurrentUser user) {
+    requireAdmin(user);
+    WarehouseConnection warehouse =
+        warehouses
+            .findConnection(warehouseId)
+            .orElseThrow(() -> ApiException.notFound("Không tìm thấy kho dữ liệu."));
+    long start = System.nanoTime();
+    try (java.sql.Connection connection = connector.openReadOnly(warehouse);
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.setQueryTimeout(limits.loginTimeoutSeconds());
+      statement.execute("SELECT 1");
+      long latency = (System.nanoTime() - start) / 1_000_000;
+      if (warehouse.status() != WarehouseStatus.DISABLED) {
+        warehouses.updateStatus(warehouseId, WarehouseStatus.ACTIVE);
+      }
+      return new ConnectionTestResult(warehouseId, true, latency, java.time.Instant.now(), null);
+    } catch (ApiException e) {
+      return failed(warehouse, e);
+    } catch (java.sql.SQLException e) {
+      return failed(
+          warehouse,
+          new ApiException(
+              org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+              "WAREHOUSE_CONNECTION_ERROR",
+              "Kết nối được nhưng không chạy được truy vấn kiểm tra.",
+              true,
+              Map.of("reason", "CHECK_QUERY_FAILED")));
+    }
+  }
+
+  private ConnectionTestResult failed(WarehouseConnection warehouse, ApiException e) {
+    if (warehouse.status() != WarehouseStatus.DISABLED) {
+      warehouses.updateStatus(warehouse.id(), WarehouseStatus.UNAVAILABLE);
+    }
+    return new ConnectionTestResult(
+        warehouse.id(),
+        false,
+        null,
+        java.time.Instant.now(),
+        com.fsa.textsql.common.ErrorResponse.of(
+                e.code(), e.getMessage(), e.retryable(), e.details())
+            .error());
   }
 
   static void requireAdmin(CurrentUser user) {

@@ -59,6 +59,12 @@ public class WarehouseController {
         .body(created);
   }
 
+  /** POST /api/v1/warehouses/{id}/test (ADMIN): reachable + latency, or a sanitized reason. */
+  @PostMapping("/{warehouseId}/test")
+  public ConnectionTestResult test(@PathVariable String warehouseId) {
+    return service.testConnection(warehouseId, CurrentUser.require());
+  }
+
   /** GET /api/v1/warehouses/{id}: authorized detail; connection fields only for ADMIN. */
   @GetMapping("/{warehouseId}")
   public WarehouseDetail detail(@PathVariable String warehouseId) {

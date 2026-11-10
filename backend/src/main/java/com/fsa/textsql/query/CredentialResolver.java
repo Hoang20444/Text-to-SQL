@@ -41,6 +41,6 @@ public class CredentialResolver {
         "WAREHOUSE_CONNECTION_ERROR",
         "Chưa cấu hình thông tin đăng nhập cho kho dữ liệu.",
         false,
-        Map.of());
+        Map.of("reason", "CREDENTIAL_NOT_CONFIGURED"));
   }
 }
