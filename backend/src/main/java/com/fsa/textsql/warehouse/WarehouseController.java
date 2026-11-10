@@ -31,12 +31,17 @@ public class WarehouseController {
   private final WarehouseRepository warehouses;
   private final WarehouseAccessService access;
   private final WarehouseService service;
+  private final com.fsa.textsql.catalog.DiscoveryService discoveries;
 
   public WarehouseController(
-      WarehouseRepository warehouses, WarehouseAccessService access, WarehouseService service) {
+      WarehouseRepository warehouses,
+      WarehouseAccessService access,
+      WarehouseService service,
+      com.fsa.textsql.catalog.DiscoveryService discoveries) {
     this.warehouses = warehouses;
     this.access = access;
     this.service = service;
+    this.discoveries = discoveries;
   }
 
   /**
@@ -63,6 +68,20 @@ public class WarehouseController {
   @PostMapping("/{warehouseId}/test")
   public ConnectionTestResult test(@PathVariable String warehouseId) {
     return service.testConnection(warehouseId, CurrentUser.require());
+  }
+
+  /** POST /api/v1/warehouses/{id}/discover (ADMIN): 202 with the PENDING (or active) run. */
+  @PostMapping("/{warehouseId}/discover")
+  public ResponseEntity<com.fsa.textsql.catalog.DiscoveryRun> discover(
+      @PathVariable String warehouseId) {
+    return ResponseEntity.accepted().body(discoveries.start(warehouseId, CurrentUser.require()));
+  }
+
+  /** GET /api/v1/warehouses/{id}/discoveries/{runId}: progress and, when done, metadata. */
+  @GetMapping("/{warehouseId}/discoveries/{runId}")
+  public com.fsa.textsql.catalog.DiscoveryRun discovery(
+      @PathVariable String warehouseId, @PathVariable String runId) {
+    return discoveries.get(warehouseId, runId, CurrentUser.require());
   }
 
   /** GET /api/v1/warehouses/{id}: authorized detail; connection fields only for ADMIN. */

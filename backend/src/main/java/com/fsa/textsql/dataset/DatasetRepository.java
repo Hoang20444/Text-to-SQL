@@ -81,6 +81,29 @@ public class DatasetRepository {
         .optional();
   }
 
+  public List<Dataset> findByWarehouse(String warehouseId) {
+    return jdbc.sql(
+            "SELECT id, warehouse_id, name, description, status, allowed_schemas::text AS schemas,"
+                + " allowed_tables::text AS tables, semantic_version, schema_version, updated_at"
+                + " FROM datasets WHERE warehouse_id = :warehouseId ORDER BY id")
+        .param("warehouseId", warehouseId)
+        .query(this::map)
+        .list();
+  }
+
+  /** Applies a discovery result: new schema version and ACTIVE / INVALID_SCHEMA status. */
+  public void updateSchemaState(String datasetId, String schemaVersion, DatasetStatus status) {
+    jdbc.sql(
+            """
+            UPDATE datasets SET schema_version = :version, status = :status, updated_at = now()
+            WHERE id = :id
+            """)
+        .param("version", schemaVersion)
+        .param("status", status.name())
+        .param("id", datasetId)
+        .update();
+  }
+
   /** Raw semantic model JSON of a dataset ("{}" when not configured). */
   public java.util.Optional<String> semanticModel(String id) {
     return jdbc.sql("SELECT semantic_model::text FROM datasets WHERE id = :id")

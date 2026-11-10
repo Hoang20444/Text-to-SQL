@@ -107,6 +107,21 @@ public class WarehouseRepository {
         .optional();
   }
 
+  /** Records the latest successful discovery; a reachable warehouse becomes ACTIVE. */
+  public void recordDiscovery(String id, String schemaVersion, String runId) {
+    jdbc.sql(
+            """
+            UPDATE warehouses SET schema_version = :version, last_discovery_id = :runId,
+              last_discovered_at = now(), updated_at = now(),
+              status = CASE WHEN status = 'DISABLED' THEN status ELSE 'ACTIVE' END
+            WHERE id = :id
+            """)
+        .param("version", schemaVersion)
+        .param("runId", runId)
+        .param("id", id)
+        .update();
+  }
+
   public void updateStatus(String id, WarehouseStatus status) {
     jdbc.sql("UPDATE warehouses SET status = :status, updated_at = now() WHERE id = :id")
         .param("status", status.name())
