@@ -77,6 +77,47 @@ public class WarehouseRepository {
         .optional();
   }
 
+  public java.util.Optional<WarehouseDetail> findDetail(String id) {
+    return jdbc.sql(
+            """
+            SELECT id, name, engine, status, host, port, database_name, default_schema, username,
+                   read_only_query, metadata_discovery, schema_version, last_discovered_at,
+                   created_at, updated_at
+            FROM warehouses WHERE id = :id
+            """)
+        .param("id", id)
+        .query(
+            (rs, n) ->
+                new WarehouseDetail(
+                    rs.getString("id"),
+                    rs.getString("name"),
+                    Engine.valueOf(rs.getString("engine")),
+                    WarehouseStatus.valueOf(rs.getString("status")),
+                    rs.getString("host"),
+                    rs.getInt("port"),
+                    rs.getString("database_name"),
+                    rs.getString("default_schema"),
+                    rs.getString("username"),
+                    new WarehouseSummary.Capabilities(
+                        rs.getBoolean("read_only_query"), rs.getBoolean("metadata_discovery")),
+                    rs.getString("schema_version"),
+                    instant(rs.getTimestamp("last_discovered_at")),
+                    instant(rs.getTimestamp("created_at")),
+                    instant(rs.getTimestamp("updated_at"))))
+        .optional();
+  }
+
+  public void updateStatus(String id, WarehouseStatus status) {
+    jdbc.sql("UPDATE warehouses SET status = :status, updated_at = now() WHERE id = :id")
+        .param("status", status.name())
+        .param("id", id)
+        .update();
+  }
+
+  private static java.time.Instant instant(java.sql.Timestamp timestamp) {
+    return timestamp == null ? null : timestamp.toInstant();
+  }
+
   public List<String> allIds() {
     return jdbc.sql("SELECT id FROM warehouses ORDER BY id").query(String.class).list();
   }

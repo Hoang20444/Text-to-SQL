@@ -4,9 +4,14 @@ import com.fsa.textsql.access.WarehouseAccessService;
 import com.fsa.textsql.common.PageQuery;
 import com.fsa.textsql.common.PageResponse;
 import com.fsa.textsql.security.CurrentUser;
+import java.net.URI;
 import java.util.Map;
 import java.util.Set;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -25,10 +30,13 @@ public class WarehouseController {
 
   private final WarehouseRepository warehouses;
   private final WarehouseAccessService access;
+  private final WarehouseService service;
 
-  public WarehouseController(WarehouseRepository warehouses, WarehouseAccessService access) {
+  public WarehouseController(
+      WarehouseRepository warehouses, WarehouseAccessService access, WarehouseService service) {
     this.warehouses = warehouses;
     this.access = access;
+    this.service = service;
   }
 
   /**
@@ -41,5 +49,19 @@ public class WarehouseController {
     query.requireEnum("engine", Engine.class);
     query.requireEnum("status", WarehouseStatus.class);
     return warehouses.findPage(query, access.listScope(CurrentUser.require()));
+  }
+
+  /** POST /api/v1/warehouses (ADMIN): 201 + Location; status stays UNAVAILABLE until tested. */
+  @PostMapping
+  public ResponseEntity<WarehouseDetail> register(@RequestBody WarehouseCreateRequest request) {
+    WarehouseDetail created = service.register(request, CurrentUser.require());
+    return ResponseEntity.created(URI.create("/api/v1/warehouses/" + created.warehouseId()))
+        .body(created);
+  }
+
+  /** GET /api/v1/warehouses/{id}: authorized detail; connection fields only for ADMIN. */
+  @GetMapping("/{warehouseId}")
+  public WarehouseDetail detail(@PathVariable String warehouseId) {
+    return service.detail(warehouseId, CurrentUser.require());
   }
 }
