@@ -1,0 +1,24 @@
+# BE — Java / Spring Boot / Data Platform / Security
+
+Bắt buộc đọc và áp dụng [implementation-rules.md](../implementation-rules.md): module được giao phải có implementation thật, validation, error handling, security liên quan và test cần thiết ngay trong cùng phạm vi; không chia version, không placeholder hoặc hoãn tích hợp sang lần sau.
+
+Đọc AGENTS, scope, architecture, toàn bộ contracts, security, acceptance; prompt nguồn `docs/prompts/02-backend.txt`. SQL Import/cross-dialect subset và in-app ingestion là DoD bắt buộc. Không tạo endpoint execute file SQL tùy ý; parser, canonical model, validator, target DDL/data writer, job/audit, preview/confirm, bounds và adapter tests phải hoạt động thật cho cả ba engines.
+
+## Ownership và stack
+
+`backend/` và phối hợp `infra/`; Java 21, Spring Boot, Maven, Web, JDBC, Flyway, Jackson, Bean Validation, RestClient/WebClient, AST parser phù hợp cả ba dialect, JUnit 5, Mockito, Testcontainers. JDBC PostgreSQL/MySQL/SQL Server. Không mặc định JSqlParser đủ mọi syntax: chọn/kiểm chứng parser bằng corpus cả ba dialect trước khi dùng làm security boundary.
+
+## Bắt đầu từ ngày đầu sau C0
+
+1. Public/internal DTO + OpenAPI/schema fixtures dùng chung; auth resource scoping; metadata store migrations; registry/semantic/discovery APIs. Python stub chỉ dùng test/cô lập dependency tạm thời khi AI đang phát triển song song; Java integration client thật, validation, error handling, security và tests phải implement cùng chức năng, không chờ một giai đoạn sau.
+2. Implement WarehouseAdapter contract và cùng bộ test cho cả ba engine: testConnection, discoverSchemas/Tables/Columns/Relationships, executeReadOnlyQuery, applySafeLimit, configureTimeout, quoteIdentifier, normalizeIdentifier, getSqlDialect, getCapabilities.
+3. PostgreSql/MySql/SqlServer adapters và dialect implement thật. Quote, limit/TOP/OFFSET, date, casts, boolean, timestamp, catalog/schema qualification khác nhau; không regex rewrite SQL hay normalize lowercase mọi tên.
+4. Query pipeline đúng architecture; parse AST recursive, read-only/allowlist, dangerous functions, timeout/row/byte bounds; trả result metadata, chart đã validate, history/audit kể cả lỗi.
+5. History/catalog large lists, ingestion orchestration registered pipeline, evaluation metrics/case detail, monitoring/platform summary, settings.
+6. Tích hợp Python thật và React thật theo kế hoạch chung. Không chờ UI hoàn tất để mới bắt đầu Java.
+
+Credential runtime chỉ SELECT; writer cho provisioning/ingestion dùng profile, principal và network riêng. App metadata Flyway không chạy trên warehouse nguồn. Engine/dialect lấy registry, không nhận từ browser. Semantic physical mapping sai phải INVALID_SCHEMA, không tự sửa SQL để “chạy được”. Snapshot result bounded, Decimal/BIGINT serialization đúng contract.
+
+## Hoàn thành task
+
+mvn test + adapter Testcontainers cho PostgreSQLContainer/MySQLContainer/MSSQLServerContainer + security corpus + schema/DTO contract checks + evaluation/E2E 3 engines. Không UnsupportedOperationException ở API bắt buộc, không adapter placeholder. Nếu SQL Server container không chạy trên host, ghi blocked và chạy trên host/CI phù hợp trước nghiệm thu; không fake pass. Báo chính xác phần đã chạy với database/provider thật.

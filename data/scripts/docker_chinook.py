@@ -381,7 +381,7 @@ def provision_import_namespace(engine, values):
         return
     login_exists = execute(
         engine,
-        "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.sql_logins WHERE name='nla_importer';\nGO\n",
+        "SELECT COUNT(*) FROM sys.sql_logins WHERE name='nla_importer';",
     )
     if login_exists == "0":
         execute(

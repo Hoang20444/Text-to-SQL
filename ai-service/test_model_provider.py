@@ -12,6 +12,9 @@ from app import Input, app
 from model_provider import ModelConfig, provider_model, provider_scope, structured_output
 from test_app import headers as fixture_headers
 from test_app import payload as fixture_payload
+from test_candidate_validation import answer, request_body
+from test_semantic_assist import envelope as assist_envelope
+from test_semantic_assist import proposal
 
 TOKEN = "model-configuration-private-service-token-at-least-32-characters"
 SECRET = "distinct-private-profile-key-do-not-echo"
@@ -19,68 +22,6 @@ VALID_SQL = (
     "SELECT station, AVG(temperature) AS average_temperature "
     "FROM analytics.observations GROUP BY station"
 )
-
-
-def request_body():
-    return {
-        "correlationId": "aggregate-repair",
-        "warehouseId": "wh-test",
-        "datasetId": "ds-test",
-        "sqlDialect": "POSTGRESQL",
-        "question": "Average temperature by station?",
-        "semanticContext": {
-            "tables": [
-                {
-                    "schema": "analytics",
-                    "name": "observations",
-                    "columns": [
-                        {"name": "station", "dataType": "STRING"},
-                        {"name": "temperature", "dataType": "DECIMAL"},
-                        {"name": "quantity", "dataType": "INTEGER"},
-                        {"name": "observed_at", "dataType": "TIMESTAMP"},
-                    ],
-                }
-            ],
-            "metrics": [],
-            "dimensions": [],
-            "relationships": [],
-            "examples": [],
-            "businessRules": [],
-            "semanticVersion": "1",
-            "schemaVersion": "1",
-            "timezone": "UTC",
-            "referenceTime": "2026-10-21T00:00:00Z",
-        },
-    }
-
-
-def answer(sql, chart=None):
-    chart_recommendation = chart or {
-        "type": "bar",
-        "x": "station",
-        "title": "Average by station",
-        "series": [{"column": "average_temperature", "label": "Average"}],
-    }
-    return {
-        "choices": [
-            {
-                "message": {
-                    "content": json.dumps(
-                        {
-                            "sql": sql,
-                            "explanation": "Average by the requested station grain",
-                            "assumptions": [],
-                            "selectedMetrics": [],
-                            "selectedDimensions": [],
-                            "confidence": 0.9,
-                            "model": "local-test-model",
-                            "chartRecommendation": chart_recommendation,
-                        }
-                    )
-                }
-            }
-        ]
-    }
 
 
 def config(**changes):
@@ -394,6 +335,34 @@ def test_deterministic_has_no_provider_configuration_or_outbound(client, monkeyp
     body["modelConfig"] = config()
     rejected = client.post("/internal/v1/text-to-sql", json=body, headers=private_headers)
     assert rejected.status_code == 422
+
+
+def test_semantic_assist_honors_private_override_without_prompting_credentials(client):
+    captured = []
+
+    def provider(request):
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": "actual-assist-model",
+                "choices": [{"message": {"content": json.dumps(proposal())}}],
+            },
+        )
+
+    app.state.provider_transport = httpx.MockTransport(provider)
+    body = assist_envelope()
+    body["modelConfig"] = config(apiKey=SECRET, model="assist-model", structuredOutput=False)
+    response = client.post(
+        "/internal/v1/semantic-assist", json=body, headers=headers("assist-test")
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["model"] == "actual-assist-model"
+    sent = json.loads(captured[0].content)
+    assert sent["model"] == "assist-model"
+    assert sent["response_format"]["type"] == "json_object"
+    assert SECRET not in captured[0].content.decode() + response.text
+    assert "modelConfig" not in captured[0].content.decode()
 
 
 def test_concurrent_requests_keep_destination_key_model_and_structured_output_isolated(client):

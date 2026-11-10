@@ -1,11 +1,24 @@
-# Shared Contract Baseline (Sprint 1 – Sprint 2)
+# Shared contract baseline 1.0.0
 
-Tài liệu quy ước giao tiếp chung giữa 3 thành viên (`Frontend`, `Backend`, `AI & Data`):
+Đọc cùng nhau, không chọn riêng một DTO:
 
-1. [Domain](domain.md): Mô hình dữ liệu chung (`Warehouse`, `Dataset`, `Query`, `Result`, `Chart`, `Pagination`) và bộ mã enum `POSTGRESQL`, `MYSQL`, `SQL_SERVER`.
-2. [Semantic Model](semantic-model.md): Cấu trúc ngữ cảnh (`semanticContext`) Backend gửi sang dịch vụ Python AI.
-3. [Java ↔ Python](java-python.md): Hợp đồng giao tiếp nội bộ `/internal/v1/text-to-sql`, xác thực `PYTHON_AI_TOKEN`, `X-Correlation-ID` và kiểm soát lỗi.
-4. [Model Providers](model-providers.md): Hợp đồng cấu hình mô hình AI (`OLLAMA` nội bộ & `ONLINE` OpenAI-compatible), mã hóa khóa API và endpoint `/internal/v1/model-provider/status`.
-5. [Public API](public-api.md): Hợp đồng REST API `/api/v1/*` giữa giao diện React và Java Backend.
-6. [Errors](errors.md): Bảng mã lỗi HTTP và trạng thái truy vấn chuẩn hóa toàn hệ thống.
-7. [Examples](examples/): Bộ file JSON mẫu dùng chung cho kiểm thử độc lập ở cả 3 tầng `FE`, `BE`, `AI`.
+1. [Domain](domain.md): Warehouse, Dataset, Query, result, chart, pagination.
+2. [Semantic model](semantic-model.md): context Java cung cấp Python.
+3. [Java ↔ Python](java-python.md): internal request/response, timeout và error.
+   [Java ↔ native semantic planner](semantic-planner.md): private Wren manifest, rewrite, lineage and post-rewrite Java guard.
+4. [Public API](public-api.md): React ↔ Java.
+5. [Errors](errors.md): HTTP, mã lỗi, trạng thái query.
+6. [File ingestion](file-ingestion.md): bulk upload, inferred mapping, private parser and asynchronous four-layer loads.
+7. [Private data executor](data-tool-runtime.md): approved query transport, native pools and typed results.
+8. [Semantic workbench / knowledge / pipelines](semantic-workbench.md): source-fork business compiler, dataset memory and independent layer transformations.
+9. [Analytics experience](analytics-experience.md): dataset-derived suggestions, reviewed semantic assistance, compact executed SQL and result-driven charts.
+10. [Model providers](model-providers.md): admin encrypted keys, selectable model profiles and explicit execution provenance.
+11. [Data quality](data-quality.md): persisted dataset checks, three-engine counts and bounded inference admission.
+12. [Readiness](readiness.md): bounded query admission, language evaluation and recorded UI/real warehouse acceptance.
+13. [Examples](examples/): fixture JSON đủ để FE mock API, BE mock AI, AI mock Java input.
+
+`contractVersion=1.0.0` là version tài liệu/fixture, không bắt thêm field vào response Python. `semanticVersion` và `schemaVersion` độc lập, lưu snapshot vào Query. `/api/v1` và `/internal/v1` là namespace API.
+
+Baseline này đã có consumers TypeScript/Zod, Java và Pydantic, cùng [OpenAPI của frontend](frontend-openapi.json) được sinh từ schemas tiêu thụ tại runtime. Đây không phải client được generate từ một OpenAPI server duy nhất; các kiểm thử consumer/provider và kiểm tra tích hợp vẫn cần đi kèm mọi thay đổi. OpenAPI không tự chứng minh endpoint hoạt động hoặc security đã nghiệm thu.
+
+Thay đổi breaking phải chỉ ra request/response/fixture nào đổi, bên nào bị ảnh hưởng, sửa mọi role/consumer liên quan và ghi decision. Không ngầm đổi camelCase thành snake_case. Không tạo bản copy contract riêng trong từng service.

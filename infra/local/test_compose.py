@@ -1,0 +1,214 @@
+"""Configuration isolation checks; actual containers are verified separately."""
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+SPEC = importlib.util.spec_from_file_location(
+    "local_compose", Path(__file__).with_name("compose.py")
+)
+COMPOSE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(COMPOSE)
+
+
+def configured_files(tmp_path, monkeypatch):
+    root = tmp_path / "repository"
+    local = root / ".local"
+    local.mkdir(parents=True)
+    key = local / "mysql-public-key.pem"
+    key.write_text("test public RSA key")
+    runtime = local / "docker.env"
+    runtime.write_text(
+        f"NLA_MYSQL_RSA_PUBLIC_KEY={key}\n"
+        "NLA_PG_ADMIN_PASSWORD=private-test-admin\n"
+        "LOCAL_API_TOKEN=private-test-local-token\n"
+        "METADATA_PASSWORD=private-test-metadata\n"
+        "NLA_CHINOOK_PG_PASSWORD=private-test-reader\n"
+        "NLA_IMPORT_PG_PASSWORD=private-test-import\n"
+        "NLA_PIPELINE_PG_PASSWORD=private-test-ingestion\n"
+        "PYTHON_AI_TOKEN=old-host-service-token\n"
+    )
+    monkeypatch.setattr(COMPOSE, "ROOT", root)
+    monkeypatch.setattr(COMPOSE, "LOCAL", local / "compose-app")
+    monkeypatch.setattr(COMPOSE, "PUBLIC", Path(__file__).parents[1] / "application.env.example")
+    for name in (
+        "LLM_BASE_URL",
+        "LLM_MODEL",
+        "LLM_API_KEY",
+        "LLM_TIMEOUT_MS",
+        "LLM_MAX_CONCURRENT_REQUESTS",
+        "LLM_ADMISSION_TIMEOUT_MS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    return local / "compose-app"
+
+
+def test_generated_configuration_separates_ai_readers_and_administrators(tmp_path, monkeypatch):
+    local = configured_files(tmp_path, monkeypatch)
+    COMPOSE.configure()
+    backend = COMPOSE.environment(local / "backend.env")
+    ai = COMPOSE.environment(local / "ai.env")
+    assert backend["PYTHON_AI_TOKEN"] == ai["PYTHON_AI_TOKEN"]
+    assert len(ai["PYTHON_AI_TOKEN"]) >= 32
+    assert ai["PYTHON_AI_TOKEN"] != "old-host-service-token"
+    assert set(ai) == {
+        "PYTHON_AI_TOKEN",
+        "KNOWLEDGE_ENABLED",
+        "KNOWLEDGE_ROOT",
+        "KNOWLEDGE_EMBEDDING_URL",
+        "KNOWLEDGE_EMBEDDING_MODEL",
+        "NLA_MODEL_PROVIDER_HOSTS",
+    }
+    assert ai["KNOWLEDGE_ENABLED"] == "false"
+    assert ai["KNOWLEDGE_ROOT"] == "/var/lib/nla/knowledge"
+    assert "LOCAL_API_TOKEN" not in backend
+    assert "NLA_PG_ADMIN_PASSWORD" not in backend
+    assert backend["METADATA_JDBC_URL"].endswith("postgres:5432/nla_metadata_compose")
+    assert backend["NLA_LOCAL"] == "false"
+    assert "NLA_MODEL_MASTER_KEY" in backend
+    assert "NLA_MODEL_MASTER_KEY" not in ai
+    assert backend["NLA_MODEL_PROVIDER_HOSTS"] == ai["NLA_MODEL_PROVIDER_HOSTS"]
+    assert backend["WAREHOUSE_ALLOWED_HOSTS"] == "postgres,mysql,sqlserver"
+    assert backend["OIDC_JWK_SET_URI"].startswith("http://keycloak:8080/")
+    for filename in ("backend.env", "ai.env", "public.env"):
+        assert (local / filename).stat().st_mode & 0o777 == 0o600
+    token = ai["PYTHON_AI_TOKEN"]
+    COMPOSE.configure()
+    assert COMPOSE.environment(local / "ai.env")["PYTHON_AI_TOKEN"] == token
+    assert (
+        COMPOSE.environment(local / "backend.env")["NLA_MODEL_MASTER_KEY"]
+        == backend["NLA_MODEL_MASTER_KEY"]
+    )
+
+
+def test_partial_provider_configuration_is_rejected(tmp_path, monkeypatch):
+    configured_files(tmp_path, monkeypatch)
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+    with pytest.raises(SystemExit, match="Configure provider URL, model and key together"):
+        COMPOSE.configure()
+
+
+def test_public_port_and_multiline_values_fail_closed(tmp_path, monkeypatch):
+    local = configured_files(tmp_path, monkeypatch)
+    COMPOSE.configure()
+    (local / "public.env").write_text("NLA_COMPOSE_API_PORT=80\nNLA_COMPOSE_WEB_PORT=4173\n")
+    with pytest.raises(SystemExit, match="public ports"):
+        COMPOSE.configure()
+    with pytest.raises(SystemExit, match="single-line"):
+        COMPOSE.write_environment(local / "forbidden.env", {"VALUE": "first\nsecond"})
+
+
+def test_native_worker_service_tokens_are_isolated_and_stable(tmp_path, monkeypatch):
+    local = configured_files(tmp_path, monkeypatch)
+    COMPOSE.configure()
+    backend = COMPOSE.environment(local / "backend.env")
+    native = COMPOSE.environment(local / "data-runtime.env")
+    files = COMPOSE.environment(local / "file-service.env")
+    ai = COMPOSE.environment(local / "ai.env")
+    assert backend["DATA_TOOL_RUNTIME_TOKEN"] == native["DATA_TOOL_RUNTIME_TOKEN"]
+    assert backend["FILE_SERVICE_TOKEN"] == files["FILE_SERVICE_TOKEN"]
+    assert backend["FILE_UPLOAD_DIRECTORY"] == "/var/lib/nla/uploads"
+    assert (
+        len({native["DATA_TOOL_RUNTIME_TOKEN"], files["FILE_SERVICE_TOKEN"], ai["PYTHON_AI_TOKEN"]})
+        == 3
+    )
+    assert set(native) == {
+        "DATA_TOOL_RUNTIME_TOKEN",
+        "DATA_TOOL_MYSQL_PUBLIC_KEY",
+        "WAREHOUSE_ALLOWED_HOSTS",
+    }
+    assert set(files) == {"FILE_SERVICE_TOKEN"}
+    assert not any(key.startswith(("DATA_TOOL_", "FILE_SERVICE_")) for key in ai)
+    assert not any(key.endswith("PASSWORD") for key in native)
+    COMPOSE.configure()
+    assert COMPOSE.environment(local / "data-runtime.env") == native
+    assert COMPOSE.environment(local / "file-service.env") == files
+
+
+def test_semantic_document_match_ignores_discovered_relationships():
+    desired = {
+        "semanticVersion": "1.0.0",
+        "schemaVersion": "chinook-1.4.5",
+        "timezone": "UTC",
+        "metrics": [],
+        "dimensions": [],
+        "businessRules": [],
+        "examples": [],
+        "relationships": [],
+    }
+    current = {
+        **desired,
+        "relationships": [{"from": {"table": "Invoice", "column": "CustomerId"}}],
+    }
+
+    assert COMPOSE.semantic_document_matches(current, desired)
+
+
+def test_semantic_document_match_preserves_fixture_relationships():
+    expected = {"from": {"table": "Invoice", "column": "CustomerId"}}
+    discovered = {"from": {"table": "Track", "column": "AlbumId"}}
+    desired = {
+        "semanticVersion": "1.0.0",
+        "schemaVersion": "chinook-1.4.5",
+        "timezone": "UTC",
+        "metrics": [],
+        "dimensions": [],
+        "businessRules": [],
+        "examples": [],
+        "relationships": [expected],
+    }
+
+    assert COMPOSE.semantic_document_matches(
+        {**desired, "relationships": [expected, discovered]}, desired
+    )
+    assert not COMPOSE.semantic_document_matches(
+        {**desired, "relationships": [discovered]}, desired
+    )
+
+
+def test_semantic_document_match_rejects_changed_owned_definitions():
+    desired = {
+        "semanticVersion": "1.0.0",
+        "schemaVersion": "chinook-1.4.5",
+        "timezone": "UTC",
+        "metrics": [],
+        "dimensions": [],
+        "businessRules": [],
+        "examples": [],
+        "relationships": [],
+    }
+
+    assert not COMPOSE.semantic_document_matches(
+        {**desired, "metrics": [{"name": "revenue"}]}, desired
+    )
+
+
+def test_inference_capacity_configuration_only_reaches_python(tmp_path, monkeypatch):
+    local = configured_files(tmp_path, monkeypatch)
+    monkeypatch.setenv("LLM_MAX_CONCURRENT_REQUESTS", "3")
+    monkeypatch.setenv("LLM_ADMISSION_TIMEOUT_MS", "500")
+    COMPOSE.configure()
+    ai = COMPOSE.environment(local / "ai.env")
+    assert ai["LLM_MAX_CONCURRENT_REQUESTS"] == "3"
+    assert ai["LLM_ADMISSION_TIMEOUT_MS"] == "500"
+    for filename in ("backend.env", "public.env", "data-runtime.env", "file-service.env"):
+        assert "LLM_MAX_CONCURRENT_REQUESTS" not in COMPOSE.environment(local / filename)
+        assert "LLM_ADMISSION_TIMEOUT_MS" not in COMPOSE.environment(local / filename)
+
+
+def test_sample_readers_only_reach_backend(tmp_path, monkeypatch):
+    local = configured_files(tmp_path, monkeypatch)
+    (local.parent / "sample-readers.env").write_text(
+        "NLA_SAMPLE_AWDW_PG_PASSWORD=sample-test-reader\n"
+    )
+    monkeypatch.setenv("NLA_QUERY_MAX_CONCURRENT", "4")
+    COMPOSE.configure()
+    assert (
+        COMPOSE.environment(local / "backend.env")["NLA_SAMPLE_AWDW_PG_PASSWORD"]
+        == "sample-test-reader"
+    )
+    assert COMPOSE.environment(local / "backend.env")["NLA_QUERY_MAX_CONCURRENT"] == "4"
+    for filename in ("ai.env", "public.env", "data-runtime.env", "file-service.env"):
+        assert "NLA_SAMPLE_AWDW_PG_PASSWORD" not in COMPOSE.environment(local / filename)
+        assert "NLA_QUERY_MAX_CONCURRENT" not in COMPOSE.environment(local / filename)

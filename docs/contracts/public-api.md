@@ -6,16 +6,6 @@ VIEWER đọc resource được cấp quyền; ANALYST thêm query/save result; 
 
 List dùng convention trong [domain](domain.md). PATCH body chỉ chứa field được phép đổi; không đổi warehouse engine trên resource đã có dataset/query, cần đăng ký mới. Resource mutation trả 200/201; create có Location header. Unknown JSON fields phải reject ở request nghiệp vụ để phát hiện drift.
 
-## Auth (Sprint 1 · US-1.2)
-
-Mọi `/api/v1/*` yêu cầu header `Authorization: Bearer <access token>` do Keycloak realm `nla` cấp (client web `nla-web`, audience `nla-api`, vai trò trong claim `roles`). Sprint 1 dùng 3 vai trò `ADMIN`, `ANALYST`, `VIEWER`. Không có/sai/hết hạn token → `401 UNAUTHENTICATED`; token không có vai trò ứng dụng hoặc truy cập kho không được cấp → `403 FORBIDDEN`. ADMIN dùng được mọi kho; vai trò khác chỉ dùng kho được cấp cho `subject` của token.
-
-| Method/path | Output |
-|---|---|
-| GET /auth/session | `{subject,username,displayName,email,roles:("ADMIN"\|"ANALYST"\|"VIEWER")[],warehouseIds:string[],expiresAt}`; `warehouseIds` là các kho người dùng được truy cập (ADMIN: tất cả). Không trả token hay secret. Ví dụ: [auth-session.json](examples/auth-session.json) |
-
-`GET /warehouses` và `GET /datasets` chỉ liệt kê kho người dùng được truy cập; `GET /datasets?warehouseId=` với kho không được cấp trả `403 FORBIDDEN`.
-
 ## Registry và platform
 
 | Method/path | Input / output |
