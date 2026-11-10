@@ -10,6 +10,14 @@ Thư mục dành cho thành viên Backend triển khai theo Sprint Backlog (`doc
 | T-1.2.1 | Keycloak realm `nla` với 3 tài khoản `admin`/`analyst`/`viewer`, Spring Security kiểm tra chữ ký JWT, `GET /api/v1/auth/session`, chặn quyền theo từng kho (bảng `warehouse_access`): không token → 401, sai kho → 403 |
 | T-1.3.2 | `POST /api/v1/query`: kiểm tra quyền kho → đọc cột thật của các bảng được phép → gọi Python AI lấy SQL ứng viên → kiểm tra chỉ một câu SELECT → chạy chỉ đọc (JDBC) trên PostgreSQL/MySQL/SQL Server → chuẩn hóa kết quả → lưu `query_history`. Kèm `GET /api/v1/datasets/{id}/examples` (câu hỏi gợi ý theo tập dữ liệu) |
 
+## Sprint 2
+
+| Task | Nội dung |
+|---|---|
+| T-2.1.1 | Quản lý kho: `POST /api/v1/warehouses` (ADMIN), `GET /api/v1/warehouses/{id}`, `POST /api/v1/warehouses/{id}/test` (độ trễ hoặc lý do lỗi không lộ mật khẩu). Quét cấu trúc chạy nền: `POST /api/v1/warehouses/{id}/discover` → 202, `GET /api/v1/warehouses/{id}/discoveries/{runId}` (schema, bảng, cột, kiểu, nullable, PK, FK, `schemaVersion`). `POST /api/v1/datasets` (ADMIN). Data Catalog: `GET /api/v1/datasets/{id}/catalog`, `/tables`, `/tables/{tableId}`, `/relationships` |
+
+Luồng cho một kho mới (ADMIN): đăng ký → `test` → `discover` (đợi `SUCCESS`) → tạo dataset → xem Catalog. Kho Chinook nạp sẵn khi chạy local cũng cần bấm `discover` một lần thì Catalog mới có dữ liệu.
+
 ## Cấu hình
 
 Backend đọc cấu hình từ biến môi trường hoặc các file trong `.local/` (đã bị Git ignore):

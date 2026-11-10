@@ -43,6 +43,14 @@ PlatformSummary: `{warehouseCount,datasetCount,healthyWarehouseCount,querySucces
 
 DiscoveryRun statuses: PENDING,RUNNING,SUCCESS,FAILED. Metadata canonical gồm schemas/tables/columns/PK/FK; không tự tạo bảng. Schema đổi khiến semantic mapping sai thì Dataset INVALID_SCHEMA; không âm thầm cập nhật meaning metric.
 
+**Đã triển khai ở Sprint 2 (T-2.1.1), các điểm chi tiết hóa:**
+
+- `POST /warehouses`: Sprint 2 nhận `name,engine,host,port,database,defaultSchema?,username,credentialReference` (`env:TEN_BIEN`). Các trường import/ingestion writer chưa nhận (Sprint 5). Kho mới có `status: UNAVAILABLE` cho tới khi `test` hoặc `discover` thành công thì thành `ACTIVE`. Response và `GET /warehouses/{id}` có thêm `schemaVersion`, `lastDiscoveredAt`, `createdAt`, `updatedAt`; connection fields chỉ trả cho ADMIN; không bao giờ trả `credentialReference`.
+- `POST /warehouses/{id}/test`: khi thất bại, `error.details.reason` là một trong `AUTHENTICATION_FAILED`, `DATABASE_NOT_FOUND`, `HOST_UNREACHABLE`, `HOST_NOT_ALLOWED`, `CREDENTIAL_NOT_CONFIGURED`, `CHECK_QUERY_FAILED`, `CONNECTION_FAILED` (suy ra từ SQLState, không chứa thông báo gốc của driver).
+- `DiscoveryRun`: `{runId,warehouseId,status,createdAt,completedAt,schemaVersion,tableCount,metadata,error}`. `metadata = {schemas:string[], tables:[{schema,name,type:TABLE|VIEW,columns:[{name,dataType,nativeType,nullable}],primaryKey:string[],foreignKeys:[{constraint,from:{table:TableRef,column},to:{table:TableRef,column}}]}]}`. `schemaVersion` dạng `sha256:<16 hex>`, cùng cấu trúc thì cùng giá trị. Gọi `discover` khi đang có lượt chạy trả lại lượt đó. Lỗi lượt quét: `WAREHOUSE_CONNECTION_ERROR` (kèm `reason`), `DISCOVERY_LIMIT` (>2000 bảng), `DISCOVERY_BUSY`, `DISCOVERY_INTERRUPTED`, `DISCOVERY_FAILED`.
+- `POST /datasets`: **không nhận** `semanticVersion`/`schemaVersion` từ client (theo domain.md "không lấy version từ UI"). Server đặt `schemaVersion` = lượt quét gần nhất, `semanticVersion = "0.0.0"` khi chưa có semantic model. Mọi bảng phải có trong lượt quét gần nhất, nếu không trả `409 SCHEMA_MISMATCH` kèm `details.missingTables`. Kho chưa quét: `409 DATASET_UNAVAILABLE` với `details.reason = NOT_DISCOVERED`.
+- Catalog (`/datasets/{id}/catalog|tables|tables/{tableId}|relationships`) dựng từ lượt quét gần nhất + semantic model. `TableMetadata.status`: `AVAILABLE` hoặc `MISSING` (bảng được phép nhưng không còn trong lượt quét, `queryable=false`). `category` hiện bằng tên schema. `search` khớp tên bảng hoặc tên cột. Relationship có thêm `source: FOREIGN_KEY|SEMANTIC`. Chưa quét: `409 DATASET_UNAVAILABLE` (`NOT_DISCOVERED`).
+
 ## Catalog
 
 | Method/path | Output |
