@@ -3,11 +3,11 @@ package com.fsa.textsql.query;
 import java.sql.Types;
 
 /** Maps JDBC types to the canonical dataType values of docs/contracts/domain.md. */
-final class SqlTypes {
+public final class SqlTypes {
 
   private SqlTypes() {}
 
-  static String canonical(int jdbcType) {
+  public static String canonical(int jdbcType) {
     return switch (jdbcType) {
       case Types.BIT, Types.BOOLEAN -> "BOOLEAN";
       case Types.TINYINT, Types.SMALLINT, Types.INTEGER -> "INTEGER";
