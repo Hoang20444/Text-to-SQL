@@ -16,6 +16,7 @@ import httpx
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from starlette.concurrency import run_in_threadpool
 
 from context_index import get_schema_index, normalize_text, overlap_score
 from inference_admission import InferenceUnavailable, inference_slot
@@ -30,6 +31,7 @@ from model_provider import (
     valid_model_name,
 )
 from schema_relevance import AmbiguousTableReference, table_mentions
+from semantic_planner import PlanningFailure, PlanRequest, PlanResponse, plan_sql
 
 logger = logging.getLogger(__name__)
 
@@ -1064,6 +1066,23 @@ async def model_provider_status(req: Request, authorization: str = Header(defaul
     except ValidationError:
         raise Controlled("INVALID_REQUEST", 422) from None
     return {"provider": environment_summary()}
+
+
+@app.post(
+    "/internal/v1/semantic-plan",
+    response_model=PlanResponse,
+    response_model_exclude_none=True,
+)
+async def semantic_plan(req: Request, authorization: str = Header(default="")):
+    raw = await private_json(req, authorization)
+    try:
+        data = PlanRequest.model_validate(raw)
+    except ValidationError:
+        raise Controlled("INVALID_REQUEST", 422) from None
+    try:
+        return await run_in_threadpool(plan_sql, data)
+    except PlanningFailure as error:
+        raise Controlled(error.code, 422) from error
 
 
 async def generate_with_context(data: Input, execution_mode: str) -> Candidate:
