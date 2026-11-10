@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Sprint 2 Automated Verification Script for AI & Data Deliverables (T-2.1.2, T-2.2.2, T-2.3.2)."""
 
+import argparse
 import json
 import os
 import sys
@@ -233,7 +234,133 @@ def verify_ollama_and_openai_client() -> None:
     )
 
 
+def ask_live_ollama(question: str, dialect: str, model: str) -> None:
+    token = "verify-sprint2-private-service-token-32chars"
+    os.environ["PYTHON_AI_TOKEN"] = token
+    os.environ["NLA_MODEL_PROVIDER_HOSTS"] = "127.0.0.1,localhost"
+    os.environ["LLM_BASE_URL"] = "http://127.0.0.1:11434/v1"
+    os.environ["LLM_MODEL"] = model
+    os.environ["LLM_API_KEY"] = "ollama"
+    os.environ["LLM_TIMEOUT_MS"] = "90000"
+    os.environ["LLM_REASONING_EFFORT"] = "none"
+    os.environ["LLM_STRUCTURED_OUTPUT"] = "true"
+
+    semantic_file = {
+        "POSTGRESQL": "semantic-postgresql.json",
+        "MYSQL": "semantic-mysql.json",
+        "SQL_SERVER": "semantic-mssql.json",
+    }[dialect]
+    sem = json.loads((ROOT / "data/chinook" / semantic_file).read_text(encoding="utf-8"))
+    if not sem.get("tables"):
+        schema_name = (
+            "public"
+            if dialect == "POSTGRESQL"
+            else "nla_chinook" if dialect == "MYSQL" else "dbo"
+        )
+        inv = "invoice" if dialect == "POSTGRESQL" else "Invoice"
+        trk = "track" if dialect == "POSTGRESQL" else "Track"
+        alb = "album" if dialect == "POSTGRESQL" else "Album"
+        sem["tables"] = [
+            {
+                "schema": schema_name,
+                "name": inv,
+                "columns": [
+                    {
+                        "name": "invoice_id" if dialect == "POSTGRESQL" else "InvoiceId",
+                        "dataType": "INTEGER",
+                    },
+                    {
+                        "name": "billing_country" if dialect == "POSTGRESQL" else "BillingCountry",
+                        "dataType": "STRING",
+                    },
+                    {
+                        "name": "invoice_date" if dialect == "POSTGRESQL" else "InvoiceDate",
+                        "dataType": "TIMESTAMP",
+                    },
+                    {
+                        "name": "total" if dialect == "POSTGRESQL" else "Total",
+                        "dataType": "DECIMAL",
+                    },
+                ],
+            },
+            {
+                "schema": schema_name,
+                "name": trk,
+                "columns": [
+                    {
+                        "name": "track_id" if dialect == "POSTGRESQL" else "TrackId",
+                        "dataType": "INTEGER",
+                    },
+                    {
+                        "name": "name" if dialect == "POSTGRESQL" else "Name",
+                        "dataType": "STRING",
+                    },
+                    {
+                        "name": "album_id" if dialect == "POSTGRESQL" else "AlbumId",
+                        "dataType": "INTEGER",
+                    },
+                ],
+            },
+            {
+                "schema": schema_name,
+                "name": alb,
+                "columns": [
+                    {
+                        "name": "album_id" if dialect == "POSTGRESQL" else "AlbumId",
+                        "dataType": "INTEGER",
+                    },
+                    {
+                        "name": "title" if dialect == "POSTGRESQL" else "Title",
+                        "dataType": "STRING",
+                    },
+                ],
+            },
+        ]
+
+    if hasattr(app.state, "provider_transport"):
+        delattr(app.state, "provider_transport")
+
+    corr_id = "live-ollama-demo"
+    print(f"Calling live Ollama ({model}) on {dialect} for question: {question!r} ...")
+    with TestClient(app) as client:
+        res = client.post(
+            "/internal/v1/text-to-sql",
+            json={
+                "correlationId": corr_id,
+                "warehouseId": "wh-chinook",
+                "datasetId": "ds-chinook",
+                "sqlDialect": dialect,
+                "question": question,
+                "semanticContext": sem,
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Correlation-ID": corr_id,
+                "X-Execution-Mode": "API",
+            },
+        )
+        print(f"HTTP Status: {res.status_code}")
+        print(json.dumps(res.json(), indent=2, ensure_ascii=False))
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ask", help="Send a live natural-language question to local Ollama")
+    parser.add_argument(
+        "--dialect",
+        default="POSTGRESQL",
+        choices=("POSTGRESQL", "MYSQL", "SQL_SERVER"),
+        help="Target SQL dialect when using --ask",
+    )
+    parser.add_argument(
+        "--model",
+        default="qwen3:1.7b",
+        help="Ollama model identifier when using --ask (default: qwen3:1.7b)",
+    )
+    args = parser.parse_args()
+    if args.ask:
+        ask_live_ollama(args.ask, args.dialect, args.model)
+        return
     verify_schema_compaction()
     verify_candidate_guards()
     verify_ollama_and_openai_client()
