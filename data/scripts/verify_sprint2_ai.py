@@ -257,64 +257,135 @@ def ask_live_ollama(question: str, dialect: str, model: str) -> None:
             if dialect == "POSTGRESQL"
             else "nla_chinook" if dialect == "MYSQL" else "dbo"
         )
-        inv = "invoice" if dialect == "POSTGRESQL" else "Invoice"
-        trk = "track" if dialect == "POSTGRESQL" else "Track"
-        alb = "album" if dialect == "POSTGRESQL" else "Album"
+        pg = dialect == "POSTGRESQL"
+        chinook_catalog = [
+            (
+                "album" if pg else "Album",
+                "Album nhạc",
+                ["album", "đĩa nhạc", "dia nhac"],
+                [
+                    ("album_id" if pg else "AlbumId", "INTEGER"),
+                    ("title" if pg else "Title", "STRING"),
+                    ("artist_id" if pg else "ArtistId", "INTEGER"),
+                ],
+            ),
+            (
+                "artist" if pg else "Artist",
+                "Nghệ sĩ",
+                ["artist", "nghệ sĩ", "nghe si", "ca sĩ", "ca si", "ban nhạc", "ban nhac"],
+                [
+                    ("artist_id" if pg else "ArtistId", "INTEGER"),
+                    ("name" if pg else "Name", "STRING"),
+                ],
+            ),
+            (
+                "customer" if pg else "Customer",
+                "Khách hàng",
+                ["customer", "customers", "khách hàng", "khach hang", "người mua", "nguoi mua"],
+                [
+                    ("customer_id" if pg else "CustomerId", "INTEGER"),
+                    ("first_name" if pg else "FirstName", "STRING"),
+                    ("last_name" if pg else "LastName", "STRING"),
+                    ("country" if pg else "Country", "STRING"),
+                    ("email" if pg else "Email", "STRING"),
+                ],
+            ),
+            (
+                "employee" if pg else "Employee",
+                "Nhân viên",
+                ["employee", "employees", "nhân viên", "nhan vien"],
+                [
+                    ("employee_id" if pg else "EmployeeId", "INTEGER"),
+                    ("first_name" if pg else "FirstName", "STRING"),
+                    ("last_name" if pg else "LastName", "STRING"),
+                    ("title" if pg else "Title", "STRING"),
+                ],
+            ),
+            (
+                "genre" if pg else "Genre",
+                "Thể loại nhạc",
+                ["genre", "genres", "thể loại", "the loai", "dòng nhạc", "dong nhac"],
+                [
+                    ("genre_id" if pg else "GenreId", "INTEGER"),
+                    ("name" if pg else "Name", "STRING"),
+                ],
+            ),
+            (
+                "invoice" if pg else "Invoice",
+                "Hóa đơn",
+                ["invoice", "invoices", "hóa đơn", "hoa don", "doanh thu", "doanh số", "doanh so"],
+                [
+                    ("invoice_id" if pg else "InvoiceId", "INTEGER"),
+                    ("customer_id" if pg else "CustomerId", "INTEGER"),
+                    ("billing_country" if pg else "BillingCountry", "STRING"),
+                    ("invoice_date" if pg else "InvoiceDate", "TIMESTAMP"),
+                    ("total" if pg else "Total", "DECIMAL"),
+                ],
+            ),
+            (
+                "invoice_line" if pg else "InvoiceLine",
+                "Chi tiết hóa đơn",
+                ["invoice_line", "chi tiết hóa đơn", "chi tiet hoa don"],
+                [
+                    ("invoice_line_id" if pg else "InvoiceLineId", "INTEGER"),
+                    ("invoice_id" if pg else "InvoiceId", "INTEGER"),
+                    ("track_id" if pg else "TrackId", "INTEGER"),
+                    ("unit_price" if pg else "UnitPrice", "DECIMAL"),
+                    ("quantity" if pg else "Quantity", "INTEGER"),
+                ],
+            ),
+            (
+                "media_type" if pg else "MediaType",
+                "Định dạng media",
+                ["media_type", "định dạng", "dinh dang"],
+                [
+                    ("media_type_id" if pg else "MediaTypeId", "INTEGER"),
+                    ("name" if pg else "Name", "STRING"),
+                ],
+            ),
+            (
+                "playlist" if pg else "Playlist",
+                "Danh sách phát",
+                ["playlist", "playlists", "danh sách phát", "danh sach phat"],
+                [
+                    ("playlist_id" if pg else "PlaylistId", "INTEGER"),
+                    ("name" if pg else "Name", "STRING"),
+                ],
+            ),
+            (
+                "playlist_track" if pg else "PlaylistTrack",
+                "Bài hát trong playlist",
+                ["playlist_track"],
+                [
+                    ("playlist_id" if pg else "PlaylistId", "INTEGER"),
+                    ("track_id" if pg else "TrackId", "INTEGER"),
+                ],
+            ),
+            (
+                "track" if pg else "Track",
+                "Bài hát / Bản nhạc",
+                ["track", "tracks", "bài hát", "bai hat", "bản nhạc", "ban nhac"],
+                [
+                    ("track_id" if pg else "TrackId", "INTEGER"),
+                    ("name" if pg else "Name", "STRING"),
+                    ("album_id" if pg else "AlbumId", "INTEGER"),
+                    ("genre_id" if pg else "GenreId", "INTEGER"),
+                    ("unit_price" if pg else "UnitPrice", "DECIMAL"),
+                ],
+            ),
+        ]
         sem["tables"] = [
             {
                 "schema": schema_name,
-                "name": inv,
+                "name": tbl_name,
+                "logicalName": logical_name,
+                "description": f"{logical_name} ({ ', '.join(syns) })",
                 "columns": [
-                    {
-                        "name": "invoice_id" if dialect == "POSTGRESQL" else "InvoiceId",
-                        "dataType": "INTEGER",
-                    },
-                    {
-                        "name": "billing_country" if dialect == "POSTGRESQL" else "BillingCountry",
-                        "dataType": "STRING",
-                    },
-                    {
-                        "name": "invoice_date" if dialect == "POSTGRESQL" else "InvoiceDate",
-                        "dataType": "TIMESTAMP",
-                    },
-                    {
-                        "name": "total" if dialect == "POSTGRESQL" else "Total",
-                        "dataType": "DECIMAL",
-                    },
+                    {"name": col_name, "dataType": col_type, "synonyms": syns}
+                    for col_name, col_type in cols
                 ],
-            },
-            {
-                "schema": schema_name,
-                "name": trk,
-                "columns": [
-                    {
-                        "name": "track_id" if dialect == "POSTGRESQL" else "TrackId",
-                        "dataType": "INTEGER",
-                    },
-                    {
-                        "name": "name" if dialect == "POSTGRESQL" else "Name",
-                        "dataType": "STRING",
-                    },
-                    {
-                        "name": "album_id" if dialect == "POSTGRESQL" else "AlbumId",
-                        "dataType": "INTEGER",
-                    },
-                ],
-            },
-            {
-                "schema": schema_name,
-                "name": alb,
-                "columns": [
-                    {
-                        "name": "album_id" if dialect == "POSTGRESQL" else "AlbumId",
-                        "dataType": "INTEGER",
-                    },
-                    {
-                        "name": "title" if dialect == "POSTGRESQL" else "Title",
-                        "dataType": "STRING",
-                    },
-                ],
-            },
+            }
+            for tbl_name, logical_name, syns, cols in chinook_catalog
         ]
 
     if hasattr(app.state, "provider_transport"):
