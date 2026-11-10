@@ -24,7 +24,12 @@ public record SemanticModel(
 
   private static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() {};
 
-  static SemanticModel parse(String raw, ObjectMapper json) {
+  /** False for a dataset whose semantic model has not been configured yet ("{}"). */
+  public static boolean isConfigured(String raw) {
+    return raw != null && !raw.isBlank() && !raw.strip().equals("{}");
+  }
+
+  public static SemanticModel parse(String raw, ObjectMapper json) {
     Map<String, Object> model;
     try {
       model = json.readValue(raw, MAP);
