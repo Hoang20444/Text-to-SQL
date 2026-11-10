@@ -5,8 +5,8 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.not;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -51,8 +51,8 @@ class MetadataApiIntegrationTest {
     return get(url).header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin()));
   }
 
-  private static MockHttpServletRequestBuilder adminPost(String url) {
-    return post(url).header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin()));
+  private static MockHttpServletRequestBuilder adminDelete(String url) {
+    return delete(url).header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin()));
   }
 
   @Test
@@ -194,7 +194,8 @@ class MetadataApiIntegrationTest {
         .andExpect(status().isNotFound())
         .andExpect(jsonPath("$.error.code").value("RESOURCE_NOT_FOUND"));
 
-    mvc.perform(adminPost("/api/v1/warehouses"))
+    // POST /warehouses now registers a warehouse; DELETE is still not supported.
+    mvc.perform(adminDelete("/api/v1/warehouses"))
         .andExpect(status().isMethodNotAllowed())
         .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
   }
