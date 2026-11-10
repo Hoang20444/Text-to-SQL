@@ -25,10 +25,23 @@ public class DatasetController {
 
   private final DatasetRepository datasets;
   private final WarehouseAccessService access;
+  private final DatasetService service;
 
-  public DatasetController(DatasetRepository datasets, WarehouseAccessService access) {
+  public DatasetController(
+      DatasetRepository datasets, WarehouseAccessService access, DatasetService service) {
     this.datasets = datasets;
     this.access = access;
+    this.service = service;
+  }
+
+  /** POST /api/v1/datasets (ADMIN): tables must exist in the latest scan; 201 + Location. */
+  @org.springframework.web.bind.annotation.PostMapping
+  public org.springframework.http.ResponseEntity<Dataset> create(
+      @org.springframework.web.bind.annotation.RequestBody DatasetCreateRequest request) {
+    Dataset created = service.create(request, CurrentUser.require());
+    return org.springframework.http.ResponseEntity.created(
+            java.net.URI.create("/api/v1/datasets/" + created.datasetId()))
+        .body(created);
   }
 
   /**
