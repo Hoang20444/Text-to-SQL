@@ -51,6 +51,12 @@
       <artifactId>postgresql</artifactId>
       <scope>runtime</scope>
     </dependency>
+    <!-- SQL parsing for semantic metric expressions and the SQL guard -->
+    <dependency>
+      <groupId>com.github.jsqlparser</groupId>
+      <artifactId>jsqlparser</artifactId>
+      <version>5.3</version>
+    </dependency>
     <!-- Warehouse drivers: PostgreSQL above, plus MySQL and SQL Server -->
     <dependency>
       <groupId>com.mysql</groupId>

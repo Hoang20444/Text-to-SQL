@@ -114,6 +114,39 @@ public class Store {
         "SELECT credential_reference FROM warehouse WHERE id=?", String.class, id);
   }
 
+  /** reference null keeps the stored credential reference. */
+  public void updateWarehouse(Map<String, Object> doc, String reference) {
+    jdbc.update(
+        "UPDATE warehouse SET"
+            + " document=?::jsonb,credential_reference=coalesce(?,credential_reference),updated_at=now()"
+            + " WHERE id=?",
+        Json.write(doc),
+        reference,
+        doc.get("warehouseId"));
+  }
+
+  public void run(String id, String kind, Map<String, Object> document) {
+    jdbc.update(
+        "INSERT INTO operation_run(id,kind,document) VALUES (?,?,?::jsonb) ON CONFLICT(id) DO"
+            + " UPDATE SET document=excluded.document",
+        id,
+        kind,
+        Json.write(document));
+  }
+
+  public Map<String, Object> run(String id, String kind) {
+    var list =
+        jdbc.query(
+            "SELECT document::text FROM operation_run WHERE id=? AND kind=?",
+            (rs, n) -> Json.read(rs.getString(1)),
+            id,
+            kind);
+    if (list.isEmpty()) throw ApiException.notFound();
+    var doc = list.getFirst();
+    if (doc.get("warehouseId") != null) authorize(doc.get("warehouseId").toString());
+    return doc;
+  }
+
   public void insertDataset(Map<String, Object> doc, Map<String, Object> semantic) {
     jdbc.update(
         "INSERT INTO dataset(id,warehouse_id,document,semantic_model) VALUES"

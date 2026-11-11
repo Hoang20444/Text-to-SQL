@@ -97,6 +97,106 @@ public class CatalogService {
     return sem;
   }
 
+  /** Data Catalog collections: live tables, joins, or semantic metrics/dimensions/examples. */
+  public List<Map<String, Object>> collection(String datasetId, String kind) {
+    if (kind.equals("tables")) return tables(datasetId);
+    if (kind.equals("relationships")) return Json.objects(context(datasetId).get("relationships"));
+    if (!Set.of("metrics", "dimensions", "examples").contains(kind)) throw ApiException.notFound();
+    return Json.objects(store.semantic(datasetId).get(kind));
+  }
+
+  public Map<String, Object> summary(String id) {
+    var d = store.dataset(id);
+    var tables = tables(id);
+    var metrics = collection(id, "metrics");
+    var dims = collection(id, "dimensions");
+    var examples = collection(id, "examples");
+    return Json.obj(
+        "datasetId",
+        id,
+        "semanticVersion",
+        d.get("semanticVersion"),
+        "schemaVersion",
+        d.get("schemaVersion"),
+        "tableCount",
+        tables.size(),
+        "metricCount",
+        metrics.size(),
+        "dimensionCount",
+        dims.size(),
+        "relationshipCount",
+        collection(id, "relationships").size(),
+        "exampleCount",
+        examples.size(),
+        "tableCategories",
+        categories(tables),
+        "metricCategories",
+        categories(metrics),
+        "exampleCategories",
+        categories(examples));
+  }
+
+  static List<Map<String, Object>> categories(List<Map<String, Object>> items) {
+    var counts = new TreeMap<String, Long>();
+    items.stream()
+        .map(i -> Json.str(i, "category"))
+        .filter(s -> !s.isBlank())
+        .forEach(s -> counts.merge(s, 1L, Long::sum));
+    return counts.entrySet().stream()
+        .map(e -> Json.obj("name", e.getKey(), "count", e.getValue()))
+        .toList();
+  }
+
+  /** Semantic metadata must reference columns/tables that exist in the dataset's tables. */
+  public void validateSemantic(Map<String, Object> sem, List<Map<String, Object>> tables) {
+    Map<String, Set<String>> fields = new HashMap<>();
+    for (var t : tables) {
+      Set<String> columns = new HashSet<>();
+      Json.objects(t.get("columns")).forEach(c -> columns.add(Json.str(c, "name")));
+      fields.put(key(t), columns);
+    }
+    Set<String> endpoints = new HashSet<>();
+    for (var relation : Json.objects(sem.get("relationships"))) {
+      if (!endpoints.add(relationIdentity(relation)))
+        throw new ApiException(
+            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Join bị khai báo lặp hoặc mâu thuẫn.");
+      if (!Set.of("ONE_TO_ONE", "MANY_TO_ONE", "ONE_TO_MANY", "MANY_TO_MANY")
+          .contains(Json.str(relation, "cardinality")))
+        throw ApiException.bad("Cardinality không hợp lệ.");
+      for (String side : List.of("from", "to")) {
+        var endpoint = Json.map(relation.get(side));
+        if (!fields
+            .getOrDefault(key(Json.map(endpoint.get("table"))), Set.of())
+            .contains(Json.str(endpoint, "column")))
+          throw new ApiException(
+              HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Join tham chiếu cột ngoài dataset.");
+      }
+    }
+    for (var d : Json.objects(sem.get("dimensions")))
+      if (!fields
+          .getOrDefault(key(Json.map(d.get("table"))), Set.of())
+          .contains(Json.str(d, "column")))
+        throw new ApiException(
+            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Dimension không khớp metadata vật lý.");
+    Set<String> dimensionNames = new HashSet<>();
+    Json.objects(sem.get("dimensions")).forEach(d -> dimensionNames.add(Json.str(d, "name")));
+    for (var m : Json.objects(sem.get("metrics"))) {
+      if (Json.objects(m.get("tableRefs")).stream().anyMatch(t -> !fields.containsKey(key(t))))
+        throw new ApiException(
+            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Metric tham chiếu bảng ngoài dataset.");
+      Object dimensions = m.get("compatibleDimensions");
+      if (!(dimensions instanceof List<?> names) || !dimensionNames.containsAll(names))
+        throw new ApiException(
+            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Compatible dimensions không hợp lệ.");
+      try {
+        net.sf.jsqlparser.parser.CCJSqlParserUtil.parseExpression(Json.str(m, "expression"));
+      } catch (Exception e) {
+        throw new ApiException(
+            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Biểu thức metric không hợp lệ.");
+      }
+    }
+  }
+
   private static String relationIdentity(Map<String, Object> relation) {
     var from = Json.map(relation.get("from"));
     var to = Json.map(relation.get("to"));
