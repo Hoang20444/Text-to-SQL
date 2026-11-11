@@ -11,7 +11,7 @@
     <relativePath/>
   </parent>
 
-  <groupId>com.fsa</groupId>
+  <groupId>dev.nla</groupId>
   <artifactId>text-to-sql-backend</artifactId>
   <version>1.0.0-SNAPSHOT</version>
   <name>Text-to-SQL Backend</name>
@@ -32,7 +32,7 @@
     </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-security</artifactId>
+      <artifactId>spring-boot-starter-validation</artifactId>
     </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
@@ -50,6 +50,12 @@
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <scope>runtime</scope>
+    </dependency>
+    <!-- SQL parsing for semantic metric expressions and the SQL guard -->
+    <dependency>
+      <groupId>com.github.jsqlparser</groupId>
+      <artifactId>jsqlparser</artifactId>
+      <version>5.3</version>
     </dependency>
     <!-- Warehouse drivers: PostgreSQL above, plus MySQL and SQL Server -->
     <dependency>
@@ -88,6 +94,16 @@
       <artifactId>postgresql</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>mysql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>mssqlserver</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -95,6 +111,13 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>-Dfile.encoding=UTF-8</argLine>
+        </configuration>
       </plugin>
     </plugins>
   </build>
