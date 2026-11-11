@@ -28,10 +28,24 @@ public abstract class JdbcWarehouseAdapter implements WarehouseAdapter {
     props.setProperty("connectTimeout", engine().equals("POSTGRESQL") ? "5" : "5000");
     props.setProperty("socketTimeout", engine().equals("POSTGRESQL") ? "20" : "20000");
     if (engine().equals("MYSQL") && !tls) {
-      if (!mysqlRsaPublicKey.isBlank())
+      // Without TLS, MySQL 8 caching_sha2 login needs the server RSA key. Use the saved key file
+      // when it is readable (a Windows path read from a .properties import can lose its
+      // backslashes); otherwise let the driver fetch it. This only happens with TLS disabled,
+      // which is limited to the isolated local Docker databases.
+      if (readable(mysqlRsaPublicKey))
         props.setProperty("serverRSAPublicKeyFile", mysqlRsaPublicKey);
+      else props.setProperty("allowPublicKeyRetrieval", "true");
     }
     return DriverManager.getConnection(jdbcUrl(w), props);
+  }
+
+  private static boolean readable(String path) {
+    if (path.isBlank()) return false;
+    try {
+      return java.nio.file.Files.isReadable(java.nio.file.Path.of(path));
+    } catch (java.nio.file.InvalidPathException e) {
+      return false;
+    }
   }
 
   public boolean testConnection(Map<String, Object> w, String password) throws SQLException {
@@ -78,7 +92,8 @@ public abstract class JdbcWarehouseAdapter implements WarehouseAdapter {
       try (ResultSet catalogs = c.getMetaData().getCatalogs()) {
         while (catalogs.next()) {
           String name = catalogs.getString("TABLE_CAT");
-          if (!Set.of("information_schema", "mysql", "performance_schema", "sys").contains(name)) {
+          if (!Set.of("information_schema", "mysql", "performance_schema", "sys")
+              .contains(name.toLowerCase(Locale.ROOT))) {
             names.add(name);
           }
         }
@@ -88,9 +103,11 @@ public abstract class JdbcWarehouseAdapter implements WarehouseAdapter {
     try (ResultSet rs = c.getMetaData().getSchemas()) {
       while (rs.next()) {
         String n = rs.getString("TABLE_SCHEM");
-        if (!Set.of("information_schema", "sys", "guest").contains(n)
-            && !n.startsWith("pg_")
-            && !n.startsWith("db_")) names.add(n);
+        // System schemas are skipped case-insensitively: SQL Server reports INFORMATION_SCHEMA.
+        String lower = n.toLowerCase(Locale.ROOT);
+        if (!Set.of("information_schema", "sys", "guest").contains(lower)
+            && !lower.startsWith("pg_")
+            && !lower.startsWith("db_")) names.add(n);
       }
     }
     return names;

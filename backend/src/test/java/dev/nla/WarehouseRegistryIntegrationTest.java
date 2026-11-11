@@ -201,6 +201,9 @@ class WarehouseRegistryIntegrationTest {
             as(TestJwt.admin(), post("/api/v1/warehouses/" + id + "/discover"), null)
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.status").value("SUCCESS")));
+    assertThat(Json.objects(Json.map(run.get("metadata")).get("schemas")))
+        .extracting(s -> Json.str(s, "name").toLowerCase())
+        .doesNotContain("information_schema", "sys", "pg_catalog", "mysql");
     var shop =
         Json.objects(Json.map(run.get("metadata")).get("schemas")).stream()
             .filter(s -> "shop".equals(s.get("name")))
