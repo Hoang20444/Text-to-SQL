@@ -19,17 +19,26 @@ public class QueryService {
   private final Adapters adapters;
   private final AiClient ai;
   private final SqlGuard guard;
+  private final ModelProviderService providers;
 
-  public QueryService(Store s, CatalogService c, Adapters a, AiClient ai, SqlGuard guard) {
+  public QueryService(
+      Store s,
+      CatalogService c,
+      Adapters a,
+      AiClient ai,
+      SqlGuard guard,
+      ModelProviderService providers) {
     store = s;
     catalog = c;
     adapters = a;
     this.ai = ai;
     this.guard = guard;
+    this.providers = providers;
   }
 
   public Map<String, Object> run(Map<String, Object> b) {
-    RegistryController.fields(b, Set.of("warehouseId", "datasetId", "question", "mode"));
+    RegistryController.fields(
+        b, Set.of("warehouseId", "datasetId", "question", "mode", "providerId"));
     RegistryController.required(b, "warehouseId", "datasetId", "question");
     String question = Json.str(b, "question").strip();
     if (question.codePointCount(0, question.length()) > 1000)
@@ -38,6 +47,12 @@ public class QueryService {
     if (mode.isBlank()) mode = "AUTO";
     if (!Set.of("AUTO", "API", "DETERMINISTIC").contains(mode))
       throw ApiException.bad("Mode không hợp lệ.");
+    if (b.containsKey("providerId")
+        && (!"API".equals(mode)
+            || !(b.get("providerId") instanceof String providerId)
+            || providerId.isBlank()
+            || providerId.length() > 100))
+      throw ApiException.bad("Chỉ chế độ API nhận providerId hợp lệ; AUTO dùng provider mặc định.");
     var w = store.warehouse(Json.str(b, "warehouseId"));
     var d = store.dataset(Json.str(b, "datasetId"));
     if (!w.get("warehouseId").equals(d.get("warehouseId")))
@@ -45,11 +60,15 @@ public class QueryService {
     if (!Json.str(w, "status").equals("ACTIVE") || !Json.str(d, "status").equals("ACTIVE"))
       throw new ApiException(
           HttpStatus.CONFLICT, "DATASET_UNAVAILABLE", "Warehouse hoặc dataset không hoạt động.");
-    return execute(w, d, question, mode);
+    return execute(w, d, question, mode, Json.str(b, "providerId"));
   }
 
   private Map<String, Object> execute(
-      Map<String, Object> w, Map<String, Object> d, String question, String mode) {
+      Map<String, Object> w,
+      Map<String, Object> d,
+      String question,
+      String mode,
+      String providerId) {
     String id = Json.id("qry");
     String now = Instant.now().toString();
     long start = System.nanoTime();
@@ -70,6 +89,8 @@ public class QueryService {
             "status",
             "RUNNING",
             "model",
+            null,
+            "provider",
             null,
             "executionMode",
             mode.equals("DETERMINISTIC") ? "DETERMINISTIC" : "API",
@@ -125,6 +146,14 @@ public class QueryService {
               question,
               "semanticContext",
               context);
+      if (!"DETERMINISTIC".equals(mode)) {
+        // The chosen profile's config (with its decrypted key) goes only to the private AI call;
+        // history keeps a key-free snapshot of which provider answered.
+        var provider =
+            providerId.isBlank() ? providers.selectDefault() : providers.select(providerId);
+        q.put("provider", provider.snapshot());
+        provider.apply(request);
+      }
       var candidate = ai.generate(request, mode);
       QueryDeadline.check();
       q.put("model", candidate.get("model"));

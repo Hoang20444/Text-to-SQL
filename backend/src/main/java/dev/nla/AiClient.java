@@ -22,6 +22,50 @@ public class AiClient {
     this.env = env;
   }
 
+  /** Private non-query capabilities of the AI service; only the provider status for now. */
+  public Map<String, Object> invoke(String path, Map<String, Object> request, int timeoutSeconds) {
+    if (!Set.of("model-provider/status").contains(path))
+      throw ApiException.bad("Private capability không hợp lệ.");
+    String base = env.getProperty("PYTHON_AI_URL", "");
+    String token = env.getProperty("PYTHON_AI_TOKEN", "");
+    if (base.isBlank() || token.length() < 32)
+      throw new ApiException(
+          HttpStatus.SERVICE_UNAVAILABLE, "LLM_ERROR", "Chưa cấu hình dịch vụ xử lý.");
+    try {
+      URI uri = URI.create(base + "/internal/v1/" + path);
+      if (!Set.of("http", "https").contains(uri.getScheme()) || uri.getUserInfo() != null)
+        throw new IllegalArgumentException();
+      var response =
+          http.send(
+              HttpRequest.newBuilder(uri)
+                  .timeout(Duration.ofSeconds(QueryDeadline.seconds(timeoutSeconds)))
+                  .header("Content-Type", "application/json")
+                  .header("Authorization", "Bearer " + token)
+                  .header("X-Correlation-ID", Json.str(request, "correlationId"))
+                  .POST(HttpRequest.BodyPublishers.ofString(Json.write(request)))
+                  .build(),
+              HttpResponse.BodyHandlers.ofString());
+      if (response.body().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1048576)
+        throw new ApiException(HttpStatus.BAD_GATEWAY, "LLM_ERROR", "Phản hồi vượt giới hạn.");
+      var body = Json.read(response.body());
+      if (response.statusCode() != 200)
+        throw new ApiException(
+            HttpStatus.SERVICE_UNAVAILABLE,
+            "LLM_ERROR",
+            "Không đọc được cấu hình model từ dịch vụ xử lý.");
+      return body;
+    } catch (ApiException exception) {
+      throw exception;
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw new ApiException(
+          HttpStatus.GATEWAY_TIMEOUT, "QUERY_TIMEOUT", "Yêu cầu truy vấn đã dừng.");
+    } catch (Exception exception) {
+      throw new ApiException(
+          HttpStatus.SERVICE_UNAVAILABLE, "LLM_ERROR", "Không kết nối được dịch vụ xử lý.");
+    }
+  }
+
   static void validateCandidate(Map<String, Object> body) {
     Set<String> fields =
         Set.of(
