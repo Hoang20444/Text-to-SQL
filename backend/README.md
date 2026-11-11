@@ -16,9 +16,11 @@ Code backend được port từ repo toannq (package `dev.nla`) và cắt đúng
 
 | Task | Nội dung |
 |---|---|
-| T-2.1.1 | Quản lý kho: `POST /api/v1/warehouses` (ADMIN), `GET /api/v1/warehouses/{id}`, `POST /api/v1/warehouses/{id}/test` (độ trễ hoặc lý do lỗi không lộ mật khẩu). Quét cấu trúc chạy nền: `POST /api/v1/warehouses/{id}/discover` → 202, `GET /api/v1/warehouses/{id}/discoveries/{runId}` (schema, bảng, cột, kiểu, nullable, PK, FK, `schemaVersion`). `POST /api/v1/datasets` (ADMIN). Data Catalog: `GET /api/v1/datasets/{id}/catalog`, `/tables`, `/tables/{tableId}`, `/relationships` |
+| T-2.1.1 | Quản lý kho (ADMIN): `POST /api/v1/warehouses` (trạng thái `INVALID` tới khi kiểm tra kết nối), `PATCH /api/v1/warehouses/{id}`, `POST /api/v1/warehouses/{id}/test` (`reachable`, `latencyMs`; lỗi không lộ mật khẩu hay thông báo driver). Quét cấu trúc: `POST /api/v1/warehouses/{id}/discover` → 202 kèm lượt quét (schema → bảng → cột, kiểu chuẩn hóa, nullable, PK, FK), xem lại bằng `GET /api/v1/warehouses/{id}/discoveries/{runId}`. Dataset: `POST/PATCH /api/v1/datasets` (allowlist phải khớp bảng thật). Data Catalog: `GET /api/v1/datasets/{id}/catalog`, `/tables`, `/tables/{tableId}`, `/relationships`, `/metrics`, `/dimensions`, `/examples` |
+| T-2.2.1 | Bộ gác cổng SQL bằng JSqlParser: duyệt đệ quy cây cú pháp, chỉ một câu SELECT, chặn DML/DDL kể cả trong CTE/subquery, `SELECT INTO`, khóa bảng, comment, tham số, bảng khác database và hàm ngoài danh sách cho phép; mọi bảng/cột phải thuộc dataset; dấu nháy, `LIMIT`/`TOP` phải đúng phương ngữ. Giới hạn dòng theo từng engine và một hạn chót 60 giây chung cho gọi AI + chạy SQL |
+| T-2.3.1 | Cấu hình model AI: `GET/POST /api/v1/settings/model-providers`, `PUT /{id}` (kèm `revision`), `DELETE /{id}`, `PUT /default`, `POST /{id}/test` (gọi `/models` của provider: kết nối được, có model, lý do lỗi). API key mã hóa AES-256-GCM bằng `NLA_MODEL_MASTER_KEY`, không bao giờ trả ra response. Truy vấn `AUTO` dùng provider mặc định, `API` có thể chọn `providerId`, `DETERMINISTIC` không gửi cấu hình model |
 
-Luồng cho một kho mới (ADMIN): đăng ký → `test` → `discover` (đợi `SUCCESS`) → tạo dataset → xem Catalog. Kho Chinook nạp sẵn khi chạy local cũng cần bấm `discover` một lần thì Catalog mới có dữ liệu.
+Luồng cho một kho mới (ADMIN): đăng ký → `test` → `discover` → tạo dataset → xem Catalog.
 
 ## Cấu hình
 
@@ -40,7 +42,9 @@ Backend đọc cấu hình từ biến môi trường hoặc các file trong `.l
 | `PYTHON_AI_URL` | Địa chỉ Python AI service, ví dụ `http://127.0.0.1:8000` (`docker_chinook.py` ghi sẵn vào `.local/docker.env`) |
 | `WAREHOUSE_ALLOWED_HOSTS` | Danh sách host kho được phép kết nối (mặc định `127.0.0.1,localhost`) |
 | `PYTHON_AI_TOKEN` | Service token dùng chung giữa Java và Python (≥ 32 ký tự). Phải đặt **cùng giá trị** cho cả hai tiến trình; không có trong Git |
-| `NLA_MYSQL_RSA_PUBLIC_KEY` | File khóa RSA của MySQL do `docker_chinook.py` lưu (dùng để đăng nhập MySQL 8 không cần TLS) |
+| `NLA_MYSQL_RSA_PUBLIC_KEY` | File khóa RSA của MySQL do `docker_chinook.py` lưu (dùng để đăng nhập MySQL 8 không cần TLS). Không đọc được file thì driver tự lấy khóa, chỉ áp dụng khi tắt TLS cho CSDL Docker local |
+| `NLA_MODEL_MASTER_KEY` | Khóa chủ 32 byte (base64) để mã hóa API key của model. Tạo một lần, ví dụ `py -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"`, và giữ ngoài Git. Thiếu khóa thì không lưu được provider có API key (503 `MODEL_CONFIGURATION_UNAVAILABLE`) |
+| `NLA_MODEL_PROVIDER_HOSTS` | Host model được phép thêm ngoài danh sách mặc định (OpenAI, Groq, DeepSeek, OpenRouter, Gemini, Mistral, Together, Fireworks, localhost cho Ollama) |
 
 Mật khẩu kho dữ liệu không lưu trong DB: bảng `warehouse` chỉ giữ `credential_reference` dạng `env:NLA_CHINOOK_PG_PASSWORD`, và API không bao giờ trả trường này. Backend không lưu mật khẩu người dùng: chỉ kiểm tra token do Keycloak ký.
 
