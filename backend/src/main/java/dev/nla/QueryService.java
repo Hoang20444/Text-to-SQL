@@ -164,6 +164,13 @@ public class QueryService {
       q.put("status", terminalStatus(e.code));
       q.put("error", Errors.body(e.code, e.getMessage(), Json.obj("queryId", id)));
     } catch (SQLException e) {
+      org.slf4j.LoggerFactory.getLogger(QueryService.class)
+          .warn(
+              "Query failure engine={} SQLState={} vendorCode={} type={}",
+              w.get("engine"),
+              e.getSQLState(),
+              e.getErrorCode(),
+              e.getClass().getSimpleName());
       boolean timeout = e instanceof SQLTimeoutException || "57014".equals(e.getSQLState());
       q.put("status", timeout ? "TIMEOUT" : "QUERY_ERROR");
       q.put(

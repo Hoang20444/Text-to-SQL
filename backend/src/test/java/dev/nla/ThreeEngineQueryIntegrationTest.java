@@ -42,7 +42,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
       "nla.warehouse-tls=false",
       "OIDC_ISSUER_URI=" + TestJwt.ISSUER,
       "OIDC_AUDIENCE=" + TestJwt.AUDIENCE,
-      "PYTHON_AI_TOKEN=" + FakeAi.TOKEN
+      "PYTHON_AI_TOKEN=" + FakeAi.TOKEN,
+      // A developer's .local/docker.env may hold the local Docker MySQL key; not this container's.
+      "NLA_MYSQL_RSA_PUBLIC_KEY="
     })
 @AutoConfigureMockMvc
 @Testcontainers
@@ -115,6 +117,7 @@ class ThreeEngineQueryIntegrationTest {
     }
   }
 
+  // Each engine gets its own ids so the 15 s discovery cache never serves another engine.
   private void register(String engine) {
     jdbc.update("DELETE FROM query_history");
     jdbc.update("DELETE FROM dataset");
@@ -150,7 +153,7 @@ class ThreeEngineQueryIntegrationTest {
     }
     store.insertWarehouse(
         Json.obj(
-            "warehouseId", "wh-sales",
+            "warehouseId", "wh-sales-" + engine,
             "name", "Sales " + engine,
             "engine", engine,
             "host", host,
@@ -162,14 +165,22 @@ class ThreeEngineQueryIntegrationTest {
         "env:TEST_" + secret + "_PASSWORD");
     store.insertDataset(
         Json.obj(
-            "datasetId", "ds-sales",
-            "warehouseId", "wh-sales",
-            "name", "Sales",
-            "allowedSchemas", List.of("sales"),
-            "allowedTables", List.of(Json.obj("schema", "sales", "name", "orders")),
-            "semanticVersion", "1.0.0",
-            "schemaVersion", "test-1",
-            "status", "ACTIVE"),
+            "datasetId",
+            "ds-sales-" + engine,
+            "warehouseId",
+            "wh-sales-" + engine,
+            "name",
+            "Sales",
+            "allowedSchemas",
+            List.of("sales"),
+            "allowedTables",
+            List.of(Json.obj("schema", "sales", "name", "orders")),
+            "semanticVersion",
+            "1.0.0",
+            "schemaVersion",
+            "test-1",
+            "status",
+            "ACTIVE"),
         Json.read(FakeAi.SEMANTIC_MODEL));
   }
 
@@ -187,10 +198,14 @@ class ThreeEngineQueryIntegrationTest {
                 .content(
                     Json.write(
                         Json.obj(
-                            "warehouseId", "wh-sales",
-                            "datasetId", "ds-sales",
-                            "question", "Doanh thu theo quốc gia?",
-                            "mode", "DETERMINISTIC"))))
+                            "warehouseId",
+                            "wh-sales-" + engine,
+                            "datasetId",
+                            "ds-sales-" + engine,
+                            "question",
+                            "Doanh thu theo quốc gia?",
+                            "mode",
+                            "DETERMINISTIC"))))
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.status").value("SUCCESS"))
         .andExpect(jsonPath("$.engine").value(engine))
