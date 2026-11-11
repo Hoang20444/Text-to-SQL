@@ -27,6 +27,7 @@ import { AsyncSelect, Badge, Button, Field, Notice } from "./ui";
 import { BrandMark } from "./Artwork";
 import { useQuery } from "@tanstack/react-query";
 export const navigation = [
+  { to: "/", label: "Trang chủ", icon: Home },
   { to: "/query", label: "Truy vấn", icon: MessageCircle },
   { to: "/evaluation", label: "Đánh giá", icon: BarChart3 },
   { to: "/monitoring", label: "Giám sát", icon: Activity },
@@ -61,7 +62,11 @@ export function Shell() {
     enabled: notifications && c.enabled,
     staleTime: 30_000,
   });
-  const current = navigation.find((n) => location.pathname.startsWith(n.to));
+  const current = navigation.find((n) =>
+    n.to === "/"
+      ? location.pathname === "/"
+      : location.pathname.startsWith(n.to),
+  );
   useEffect(() => {
     setOpen(false);
     setNotifications(false);

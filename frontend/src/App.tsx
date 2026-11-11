@@ -1,5 +1,5 @@
 import { Component, lazy, Suspense, type ReactNode } from "react";
-import { BrowserRouter, Link, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "./app/auth";
 import {
@@ -11,6 +11,9 @@ import { Shell } from "./components/Shell";
 import { Card, Button, Empty, Loading } from "./components/ui";
 const Query = lazy(() =>
     import("./pages/QueryPage").then((m) => ({ default: m.QueryPage })),
+  ),
+  Home = lazy(() =>
+    import("./pages/HomePage").then((m) => ({ default: m.HomePage })),
   ),
   Result = lazy(() =>
     import("./pages/ResultPage").then((m) => ({ default: m.ResultPage })),
@@ -34,7 +37,8 @@ export function AppRoutes() {
     <Suspense fallback={<Loading label="Đang mở màn hình…" />}>
       <Routes>
         <Route element={<Shell />}>
-          <Route index element={<Navigate to="/query" replace />} />
+          <Route index element={<Home />} />
+          <Route path="home" element={<Home />} />
           <Route path="query" element={<Query />} />
           <Route path="query/:id" element={<Result />} />
           <Route path="query/:id/:tab" element={<Result />} />

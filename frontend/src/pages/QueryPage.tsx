@@ -64,15 +64,10 @@ export function QueryPage() {
     controller = useRef<AbortController | null>(null),
     contextKey = `${c.warehouseId}/${c.datasetId}`,
     lastContext = useRef(contextKey);
-  const catalog = useQuery({
-    queryKey: ["catalog", c.datasetId],
-    queryFn: ({ signal }) => catalogApi.summary(c.datasetId, signal),
-    enabled: c.enabled && c.dataset?.status === "ACTIVE",
-  });
   const examples = useQuery({
     queryKey: ["question-suggestions", c.datasetId, search, category, page],
     queryFn: ({ signal }) =>
-      catalogApi.suggestions(
+      catalogApi.examples(
         c.datasetId,
         { page, pageSize: 10, search, category },
         signal,
@@ -82,7 +77,7 @@ export function QueryPage() {
   const suggestionCategories = useQuery({
     queryKey: ["suggestion-categories", c.datasetId],
     queryFn: ({ signal }) =>
-      catalogApi.suggestions(c.datasetId, { page: 1, pageSize: 100 }, signal),
+      catalogApi.examples(c.datasetId, { page: 1, pageSize: 100 }, signal),
     enabled: c.enabled && c.dataset?.status === "ACTIVE",
   });
   const settings = useQuery({
@@ -382,12 +377,9 @@ export function QueryPage() {
               }
             >
               <p className="suggestion-provenance">
-                Gợi ý được suy ra theo quy tắc từ schema và định nghĩa nghiệp vụ
-                đang hoạt động; phần gợi ý này không gọi AI. Ví dụ đã duyệt do
-                quản trị viên cấu hình. Gợi ý chỉ từ schema dùng cột vật lý,
-                chưa tự xác định ý nghĩa nghiệp vụ; câu hỏi có thể cần
-                metric/dimension được cấu hình. Bấm để điền câu hỏi; kết quả chỉ
-                xuất hiện sau khi bạn gửi câu hỏi.
+                Câu hỏi mẫu được lấy từ ví dụ đã cấu hình cho dataset đang chọn;
+                tải danh sách này không gọi AI. Bấm để điền câu hỏi, sau đó gửi
+                truy vấn để tạo kết quả thật.
               </p>
               <div className="category-tabs">
                 <button
@@ -401,9 +393,9 @@ export function QueryPage() {
                 </button>
                 {Array.from(
                   new Set(
-                    suggestionCategories.data?.items.map(
-                      (item) => item.category,
-                    ) || [],
+                    suggestionCategories.data?.items
+                      .map((item) => item.category)
+                      .filter((name): name is string => Boolean(name)) || [],
                   ),
                 ).map((name) => (
                   <button
@@ -446,13 +438,11 @@ export function QueryPage() {
                                 </strong>
                                 <small>{ex.question}</small>
                                 <span className="suggestion-origin">
-                                  {
-                                    {
-                                      PHYSICAL_SCHEMA: "Từ schema thực",
-                                      SEMANTIC_MODEL: "Từ định nghĩa nghiệp vụ",
-                                      CURATED: "Ví dụ được duyệt",
-                                    }[ex.origin]
-                                  }
+                                  {ex.language === "vi"
+                                    ? "Tiếng Việt"
+                                    : ex.language === "en"
+                                      ? "English"
+                                      : "Ví dụ đã cấu hình"}
                                 </span>
                               </span>
                               <Chevron />
@@ -493,28 +483,6 @@ export function QueryPage() {
               {c.dataset?.description ||
                 "Thông tin, metrics và dimensions hiển thị theo dataset bạn chọn."}
             </p>
-            {catalog.data && (
-              <div className="mini-stats">
-                <div>
-                  <strong>{catalog.data.tableCount}</strong>
-                  <small>bảng</small>
-                </div>
-                <div>
-                  <strong>{catalog.data.metricCount}</strong>
-                  <small>metrics</small>
-                </div>
-                <div>
-                  <strong>{catalog.data.dimensionCount}</strong>
-                  <small>dimensions</small>
-                </div>
-              </div>
-            )}
-            {catalog.error && (
-              <ErrorState
-                error={catalog.error}
-                retry={() => void catalog.refetch()}
-              />
-            )}
             <DetailList
               items={[
                 [

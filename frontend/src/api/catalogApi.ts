@@ -8,15 +8,8 @@ import {
   RelationshipSchema,
   ExampleSchema,
 } from "./schema";
-import { QuestionSuggestionSchema } from "./workbenchSchema";
 const base = (id: string) => `/datasets/${encodeId(id)}`;
 export const catalogApi = {
-  suggestions: (id: string, params?: Params, signal?: AbortSignal) =>
-    request(
-      `${base(id)}/question-suggestions`,
-      pageSchema(QuestionSuggestionSchema),
-      { params, signal },
-    ),
   summary: (id: string, signal?: AbortSignal) =>
     request(`${base(id)}/catalog`, CatalogSchema, { signal }),
   tables: (id: string, params?: Params, signal?: AbortSignal) =>
