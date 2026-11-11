@@ -1,0 +1,578 @@
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  ArrowRight,
+  BookOpen,
+  BrainCircuit,
+  Calendar,
+  Database,
+  HelpCircle,
+  Lightbulb,
+  ListChecks,
+  MessageCircle,
+  Send,
+  ShieldCheck,
+  Trash2,
+  TrendingUp,
+} from "lucide-react";
+import { useAuth } from "../app/auth";
+import { useWarehouse } from "../app/providers";
+import { catalogApi } from "../api/catalogApi";
+import { queryApi } from "../api/queryApi";
+import { modelProviderApi } from "../api/modelProviderApi";
+import {
+  defaultProvider,
+  modeLabel,
+  providerLabel,
+} from "../lib/modelProvider";
+import { settingsApi } from "../api/settingsApi";
+import { QueryRequestSchema, type Mode } from "../api/schema";
+import { engineLabel, formatDate } from "../lib/format";
+import { Artwork } from "../components/Artwork";
+import { PageHeading } from "../components/Shell";
+import {
+  Card,
+  Button,
+  Badge,
+  DetailList,
+  Empty,
+  ErrorState,
+  Field,
+  Notice,
+  Pagination,
+  Resource,
+} from "../components/ui";
+export function QueryPage() {
+  const c = useWarehouse(),
+    auth = useAuth(),
+    navigate = useNavigate(),
+    location = useLocation();
+  const [question, setQuestion] = useState(() =>
+      typeof location.state?.question === "string"
+        ? location.state.question
+        : "",
+    ),
+    [mode, setMode] = useState<Mode>("AUTO"),
+    [providerId, setProviderId] = useState(""),
+    [search, setSearch] = useState(""),
+    [page, setPage] = useState(1),
+    [category, setCategory] = useState(""),
+    [validation, setValidation] = useState(""),
+    [guide, setGuide] = useState(false);
+  const input = useRef<HTMLTextAreaElement>(null),
+    controller = useRef<AbortController | null>(null),
+    contextKey = `${c.warehouseId}/${c.datasetId}`,
+    lastContext = useRef(contextKey);
+  const catalog = useQuery({
+    queryKey: ["catalog", c.datasetId],
+    queryFn: ({ signal }) => catalogApi.summary(c.datasetId, signal),
+    enabled: c.enabled && c.dataset?.status === "ACTIVE",
+  });
+  const examples = useQuery({
+    queryKey: ["question-suggestions", c.datasetId, search, category, page],
+    queryFn: ({ signal }) =>
+      catalogApi.suggestions(
+        c.datasetId,
+        { page, pageSize: 10, search, category },
+        signal,
+      ),
+    enabled: c.enabled && c.dataset?.status === "ACTIVE",
+  });
+  const suggestionCategories = useQuery({
+    queryKey: ["suggestion-categories", c.datasetId],
+    queryFn: ({ signal }) =>
+      catalogApi.suggestions(c.datasetId, { page: 1, pageSize: 100 }, signal),
+    enabled: c.enabled && c.dataset?.status === "ACTIVE",
+  });
+  const settings = useQuery({
+    queryKey: ["settings"],
+    queryFn: ({ signal }) => settingsApi.get(signal),
+    enabled: c.enabled,
+  });
+  const providers = useQuery({
+    queryKey: ["model-providers"],
+    queryFn: ({ signal }) => modelProviderApi.list(signal),
+    enabled: c.enabled,
+  });
+  const availableProviders =
+    providers.data?.items.filter(
+      (provider) => provider.enabled && provider.configured,
+    ) || [];
+  const automaticProvider = defaultProvider(providers.data);
+  const selectedProvider = availableProviders.find(
+    (provider) => provider.providerId === providerId,
+  );
+  const providerReady =
+    mode === "DETERMINISTIC" ||
+    (mode === "AUTO" ? Boolean(automaticProvider) : Boolean(selectedProvider));
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const body = QueryRequestSchema.parse({
+        warehouseId: c.warehouseId,
+        datasetId: c.datasetId,
+        question,
+        mode,
+        ...(mode === "API" && providerId ? { providerId } : {}),
+      });
+      controller.current = new AbortController();
+      return queryApi.run(body, controller.current.signal);
+    },
+    onSuccess: (q) => {
+      if (lastContext.current === `${q.warehouseId}/${q.datasetId}`)
+        navigate(`/query/${encodeURIComponent(q.queryId)}/overview`);
+    },
+  });
+  useEffect(() => {
+    if (lastContext.current !== contextKey) {
+      controller.current?.abort();
+      mutation.reset();
+      setQuestion("");
+      setPage(1);
+      setSearch("");
+      setCategory("");
+      setValidation("");
+      lastContext.current = contextKey;
+    }
+  }, [contextKey]);
+  useEffect(() => () => controller.current?.abort(), []);
+  const submit = () => {
+    const valid = QueryRequestSchema.safeParse({
+      warehouseId: c.warehouseId,
+      datasetId: c.datasetId,
+      question,
+      mode,
+      ...(mode === "API" && providerId ? { providerId } : {}),
+    });
+    if (!valid.success) {
+      setValidation(
+        valid.error.issues[0]?.message || "Chọn warehouse và dataset hợp lệ.",
+      );
+      return;
+    }
+    setValidation("");
+    mutation.mutate();
+  };
+  const allowed =
+    c.enabled &&
+    c.warehouse?.status === "ACTIVE" &&
+    c.dataset?.status === "ACTIVE" &&
+    auth.can("ANALYST") &&
+    providerReady;
+  return (
+    <>
+      <PageHeading
+        title={
+          <>
+            Truy vấn dữ liệu bằng <em>ngôn ngữ tự nhiên</em>
+          </>
+        }
+        description="Đặt câu hỏi bằng tiếng Việt hoặc tiếng Anh để khám phá dữ liệu trong warehouse. Hệ thống phân tích câu hỏi, sinh SQL, thực thi và hiển thị kết quả cùng giải thích chi tiết."
+        art={<Artwork />}
+      />
+      {c.error && <ErrorState error={c.error} retry={c.reload} />}
+      <div className="workspace-grid">
+        <div className="stack">
+          <Card
+            title="Nhập câu hỏi của bạn"
+            icon={<MessageCircle size={26} />}
+            actions={
+              <Button variant="ghost" onClick={() => setGuide(!guide)}>
+                <HelpCircle size={16} />
+                Hướng dẫn viết câu hỏi
+              </Button>
+            }
+          >
+            {guide && (
+              <Notice>
+                Nêu rõ chỉ số, chiều phân tích, khoảng thời gian và bộ lọc.
+                Không nhập thông tin bí mật vào câu hỏi.
+              </Notice>
+            )}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!mutation.isPending && allowed) submit();
+              }}
+            >
+              <div className="question-input">
+                <textarea
+                  ref={input}
+                  aria-label="Câu hỏi phân tích"
+                  value={question}
+                  maxLength={2000}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder={
+                    "Bạn muốn tìm hiểu điều gì từ dataset đã chọn?\nNhập câu hỏi bằng tiếng Việt hoặc tiếng Anh…"
+                  }
+                  disabled={mutation.isPending}
+                  onKeyDown={(e) => {
+                    if (
+                      (e.metaKey || e.ctrlKey) &&
+                      e.key === "Enter" &&
+                      allowed &&
+                      !mutation.isPending
+                    ) {
+                      e.preventDefault();
+                      submit();
+                    }
+                  }}
+                />
+                <span
+                  className={
+                    Array.from(question).length > 1000 ? "text-danger" : ""
+                  }
+                >
+                  {Array.from(question).length}/1000
+                </span>
+              </div>
+              <div className="query-actions">
+                <Button
+                  onClick={() =>
+                    document
+                      .getElementById("sample-questions")
+                      ?.scrollIntoView({ behavior: "smooth" })
+                  }
+                >
+                  <Lightbulb size={17} />
+                  Câu hỏi mẫu
+                </Button>
+                <Button
+                  disabled={mutation.isPending || !question}
+                  onClick={() => {
+                    setQuestion("");
+                    setValidation("");
+                    input.current?.focus();
+                  }}
+                >
+                  <Trash2 size={17} />
+                  Xóa
+                </Button>
+                <div className="mode-control">
+                  <span>Chế độ xử lý</span>
+                  <select
+                    aria-label="Chế độ xử lý"
+                    value={mode}
+                    onChange={(e) => {
+                      setMode(e.target.value as Mode);
+                      setProviderId("");
+                      setValidation("");
+                    }}
+                    disabled={mutation.isPending}
+                  >
+                    {(settings.data?.availableModes || ["AUTO"]).map((m) => (
+                      <option key={m} value={m}>
+                        {m === "AUTO" && automaticProvider
+                          ? `Tự động · ${providerLabel(automaticProvider)}`
+                          : modeLabel[m]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {mode === "API" && (
+                  <Field label="Model sẽ gọi">
+                    <select
+                      value={providerId}
+                      disabled={mutation.isPending || providers.isPending}
+                      onChange={(event) => setProviderId(event.target.value)}
+                    >
+                      <option value="">Chọn cấu hình model</option>
+                      {availableProviders.map((provider) => (
+                        <option
+                          key={provider.providerId}
+                          value={provider.providerId}
+                        >
+                          {provider.name} · {providerLabel(provider)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
+                <Button
+                  type="submit"
+                  variant="primary"
+                  disabled={!allowed || mutation.isPending}
+                >
+                  {mutation.isPending ? (
+                    <BrainCircuit size={19} className="spin" />
+                  ) : (
+                    <Send size={19} />
+                  )}{" "}
+                  {mutation.isPending ? "Đang xử lý…" : "Gửi"}
+                </Button>
+              </div>
+              <p className="mode-explanation">
+                {mode === "DETERMINISTIC"
+                  ? "Offline không gọi AI, Ollama hoặc API. Chỉ khớp câu hỏi với ví dụ SQL đã được khai báo cho dataset và dialect; không tự suy luận câu hỏi mới."
+                  : mode === "AUTO"
+                    ? automaticProvider
+                      ? `Gọi model mặc định: ${automaticProvider.name} · ${providerLabel(automaticProvider)}. Lỗi provider được hiển thị, không tự chuyển sang Offline.`
+                      : "Chưa có model mặc định khả dụng. ADMIN có thể cấu hình tại Cài đặt."
+                    : selectedProvider
+                      ? `Sẽ gọi ${selectedProvider.name} · ${providerLabel(selectedProvider)}. Việc chọn dataset/ngữ cảnh không thay đổi model này.`
+                      : "Chọn một cấu hình API online hoặc Ollama local trước khi gửi câu hỏi."}
+              </p>
+              {providers.error && (
+                <ErrorState
+                  error={providers.error}
+                  retry={() => void providers.refetch()}
+                />
+              )}
+              {validation && <Notice tone="error">{validation}</Notice>}
+              {mutation.error && <ErrorState error={mutation.error} />}
+            </form>
+            {!allowed && (
+              <Notice tone="warning">
+                {!c.dataset
+                  ? "Chọn warehouse và dataset ở thanh phía trên để bắt đầu."
+                  : c.warehouse?.status !== "ACTIVE"
+                    ? `Warehouse ${c.warehouse?.status || "chưa khả dụng"}.`
+                    : c.dataset.status !== "ACTIVE"
+                      ? `Dataset ${c.dataset.status}. Kiểm tra metadata trước khi truy vấn.`
+                      : !auth.can("ANALYST")
+                        ? "Bạn cần đăng nhập với quyền ANALYST hoặc ADMIN để chạy truy vấn."
+                        : "Chọn cấu hình model khả dụng hoặc chế độ Offline phù hợp."}
+              </Notice>
+            )}
+            {settings.error && (
+              <ErrorState
+                error={settings.error}
+                retry={() => void settings.refetch()}
+              />
+            )}
+            <p className="keyboard-hint">
+              <ShieldCheck size={14} />
+              Chỉ truy vấn dữ liệu trong phạm vi được cấp quyền.
+              <span>⌘ / Ctrl + Enter để gửi</span>
+            </p>
+          </Card>
+          {examples.data?.items.length ? (
+            <div className="suggestions">
+              <strong>Thử ngay:</strong>
+              {examples.data.items.slice(0, 3).map((ex, i) => (
+                <button
+                  className="chip"
+                  key={i}
+                  onClick={() => {
+                    setQuestion(ex.question);
+                    input.current?.focus();
+                  }}
+                >
+                  {ex.question}
+                  <ArrowRight size={15} />
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div id="sample-questions">
+            <Card
+              title={`Gợi ý phân tích${c.dataset ? " cho " + c.dataset.name : ""}`}
+              icon={<Lightbulb size={24} />}
+              actions={
+                <input
+                  className="sample-search"
+                  aria-label="Tìm câu hỏi mẫu"
+                  value={search}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Tìm câu hỏi mẫu…"
+                />
+              }
+            >
+              <p className="suggestion-provenance">
+                Gợi ý được suy ra theo quy tắc từ schema và định nghĩa nghiệp vụ
+                đang hoạt động; phần gợi ý này không gọi AI. Ví dụ đã duyệt do
+                quản trị viên cấu hình. Gợi ý chỉ từ schema dùng cột vật lý,
+                chưa tự xác định ý nghĩa nghiệp vụ; câu hỏi có thể cần
+                metric/dimension được cấu hình. Bấm để điền câu hỏi; kết quả chỉ
+                xuất hiện sau khi bạn gửi câu hỏi.
+              </p>
+              <div className="category-tabs">
+                <button
+                  className={!category ? "active" : ""}
+                  onClick={() => {
+                    setCategory("");
+                    setPage(1);
+                  }}
+                >
+                  Tất cả
+                </button>
+                {Array.from(
+                  new Set(
+                    suggestionCategories.data?.items.map(
+                      (item) => item.category,
+                    ) || [],
+                  ),
+                ).map((name) => (
+                  <button
+                    key={name}
+                    className={category === name ? "active" : ""}
+                    onClick={() => {
+                      setCategory(name);
+                      setPage(1);
+                    }}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+              {c.dataset?.status === "ACTIVE" && c.enabled ? (
+                <Resource resource={examples}>
+                  {(list) => (
+                    <>
+                      {list.items.length ? (
+                        <div className="question-cards">
+                          {list.items.map((ex, i) => (
+                            <button
+                              className="question-card"
+                              key={`${i}-${ex.question}`}
+                              onClick={() => {
+                                setQuestion(ex.question);
+                                input.current?.focus();
+                              }}
+                            >
+                              <span
+                                className={`icon-tile ${["blue", "purple", "green", "orange"][i % 4]}`}
+                              >
+                                <TrendingUp size={22} />
+                              </span>
+                              <span>
+                                <strong>
+                                  {ex.category ||
+                                    ex.selectedMetrics.join(", ") ||
+                                    "Câu hỏi gợi ý"}
+                                </strong>
+                                <small>{ex.question}</small>
+                                <span className="suggestion-origin">
+                                  {
+                                    {
+                                      PHYSICAL_SCHEMA: "Từ schema thực",
+                                      SEMANTIC_MODEL: "Từ định nghĩa nghiệp vụ",
+                                      CURATED: "Ví dụ được duyệt",
+                                    }[ex.origin]
+                                  }
+                                </span>
+                              </span>
+                              <Chevron />
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <Empty
+                          title="Chưa có câu hỏi mẫu"
+                          description="Chưa có gợi ý phù hợp với schema hoặc bộ lọc hiện tại. Bạn vẫn có thể nhập câu hỏi trực tiếp."
+                        />
+                      )}
+                      <Pagination {...list} onChange={(p) => setPage(p)} />
+                    </>
+                  )}
+                </Resource>
+              ) : (
+                <Empty
+                  title="Câu hỏi mẫu theo dataset"
+                  description="Chọn dataset hoạt động để tải gợi ý từ schema và ngữ nghĩa của chính dataset đó."
+                />
+              )}
+            </Card>
+          </div>
+        </div>
+        <aside className="stack">
+          <Card title="Thông tin dataset" icon={<Database size={23} />}>
+            <div className="dataset-title">
+              <span className="icon-tile large">
+                <Database size={33} />
+              </span>
+              <div>
+                <h3>{c.dataset?.name || "Chưa chọn dataset"}</h3>
+                {c.dataset && <Badge status={c.dataset.status} />}
+              </div>
+            </div>
+            <p className="muted">
+              {c.dataset?.description ||
+                "Thông tin, metrics và dimensions hiển thị theo dataset bạn chọn."}
+            </p>
+            {catalog.data && (
+              <div className="mini-stats">
+                <div>
+                  <strong>{catalog.data.tableCount}</strong>
+                  <small>bảng</small>
+                </div>
+                <div>
+                  <strong>{catalog.data.metricCount}</strong>
+                  <small>metrics</small>
+                </div>
+                <div>
+                  <strong>{catalog.data.dimensionCount}</strong>
+                  <small>dimensions</small>
+                </div>
+              </div>
+            )}
+            {catalog.error && (
+              <ErrorState
+                error={catalog.error}
+                retry={() => void catalog.refetch()}
+              />
+            )}
+            <DetailList
+              items={[
+                [
+                  "Warehouse",
+                  c.warehouse
+                    ? `${c.warehouse.name} (${engineLabel[c.warehouse.engine]})`
+                    : "—",
+                ],
+                ["Semantic version", c.dataset?.semanticVersion],
+                ["Schema version", c.dataset?.schemaVersion],
+                ["Cập nhật gần nhất", formatDate(c.dataset?.updatedAt)],
+              ]}
+            />
+          </Card>
+          <Card
+            title="Hướng dẫn và mẹo truy vấn"
+            icon={<HelpCircle size={23} />}
+          >
+            <div className="tips">
+              {[
+                {
+                  icon: MessageCircle,
+                  title: "Sử dụng ngôn ngữ tự nhiên",
+                  text: "Đặt câu hỏi bằng tiếng Việt hoặc tiếng Anh, không cần viết SQL.",
+                },
+                {
+                  icon: ListChecks,
+                  title: "Càng chi tiết càng tốt",
+                  text: "Nêu rõ thời gian, nhóm dữ liệu và bộ lọc để kết quả chính xác.",
+                },
+                {
+                  icon: Calendar,
+                  title: "Đặt câu hỏi trong ngữ cảnh",
+                  text: "Sử dụng metrics và dimensions đã định nghĩa trong Data Catalog.",
+                },
+                {
+                  icon: ShieldCheck,
+                  title: "Truy vấn an toàn",
+                  text: "Java kiểm tra và thực thi truy vấn bằng kết nối chỉ đọc.",
+                },
+              ].map(({ icon: Icon, title, text }) => (
+                <div key={title}>
+                  <span className="icon-tile">
+                    <Icon size={22} />
+                  </span>
+                  <div>
+                    <strong>{title}</strong>
+                    <p>{text}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </aside>
+      </div>
+    </>
+  );
+}
+function Chevron() {
+  return <ArrowRight size={16} />;
+}
