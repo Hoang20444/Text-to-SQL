@@ -184,6 +184,17 @@ public class Store {
             "SELECT document::text FROM platform_settings WHERE id=1", String.class));
   }
 
+  public void settings(Map<String, Object> doc) {
+    jdbc.update("UPDATE platform_settings SET document=?::jsonb WHERE id=1", Json.write(doc));
+  }
+
+  public List<Map<String, Object>> runs(String kind) {
+    return jdbc.query(
+        "SELECT document::text FROM operation_run WHERE kind=? ORDER BY created_at DESC",
+        (rs, n) -> Json.read(rs.getString(1)),
+        kind);
+  }
+
   public void audit(String action, String id) {
     jdbc.update(
         "INSERT INTO audit_event(actor,action,resource_id,correlation_id) VALUES (?,?,?,?)",
