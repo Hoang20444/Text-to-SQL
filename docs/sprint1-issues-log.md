@@ -8,10 +8,10 @@ Ký hiệu trạng thái: ✅ đã sửa · 🟡 đã có cách tạm/giới h�
 
 | # | Vấn đề | Ảnh hưởng | Trạng thái |
 |---|---|---|---|
-| 1.1 | `data/scripts/docker_chinook.py` dòng 384: câu kiểm tra `nla_importer` trên SQL Server thiếu `SET NOCOUNT ON` + `GO`. Kết quả trả kèm "(1 rows affected)" nên script tưởng login đã tồn tại và chạy `ALTER LOGIN` → lỗi. | Trên máy mới, bước `provision` SQL Server **luôn thất bại**. | 🔴 BE đã sửa 1 dòng ở máy để chạy được, **chưa commit** (file của AI/Data). Cần AI/Data sửa trên nhánh của mình. |
+| 1.1 | `data/scripts/docker_chinook.py` dòng 384: câu kiểm tra `nla_importer` trên SQL Server thiếu `SET NOCOUNT ON` + `GO`. Kết quả trả kèm "(1 rows affected)" nên script tưởng login đã tồn tại và chạy `ALTER LOGIN` → lỗi. | Trên máy mới, bước `provision` SQL Server **luôn thất bại**. | ✅ AI/Data đã sửa trên `develop` (`6a7a102`). |
 | 1.2 | `infra/compose.databases.yml` (`name: nla-chinook`) và `infra/compose.auth.yml` (`name: nla-auth`) trùng tên dự án Docker với repo toannq. | Máy từng chạy repo toannq sẽ dùng lại volume cũ (mật khẩu khác, `nla_metadata` có bảng của backend khác) → provision lỗi, Flyway xung đột, Keycloak dùng realm cũ. | 🟡 Tạm thời đặt `COMPOSE_PROJECT_NAME=nla-tts` / `nla-tts-auth`. Đề xuất đổi `name:` trong 2 file compose. |
 | 1.3 | `infra/compose.auth.yml` yêu cầu `infra/local/oidc.py init` và thư mục `.local/oidc/import` nhưng repo chưa có script này. | Không bật được Keycloak. | ✅ BE viết `infra/local/oidc.py` trong T-1.2.1 (commit `1c2f7eb`). |
-| 1.4 | `docker_chinook.py` ghi `PYTHON_AI_TOKEN=` (rỗng) vào `.local/docker.env`; không sinh token. | AI service từ chối mọi request (cần token ≥ 32 ký tự) → luồng query không chạy cho tới khi tự đặt token cho cả Java và Python. | 🔴 Đề xuất script tự sinh `PYTHON_AI_TOKEN`. Hướng dẫn tạm có trong `backend/README.md`. |
+| 1.4 | `docker_chinook.py` ghi `PYTHON_AI_TOKEN=` (rỗng) vào `.local/docker.env`; không sinh token. | AI service từ chối mọi request (cần token ≥ 32 ký tự) → luồng query không chạy cho tới khi tự đặt token cho cả Java và Python. | 🔴 Đề xuất script tự sinh `PYTHON_AI_TOKEN`. Hướng dẫn tạm có trong `backend/README.md`. Issue #6. |
 | 1.5 | Câu mẫu "Tổng doanh số theo quốc gia thanh toán?" (3 file `data/chinook/semantic-*.json`) chỉ `ORDER BY total_sales DESC`, không có tie-break. | Các quốc gia cùng doanh số (45.62, 37.62) bị sắp khác nhau giữa PG/MySQL/SQL Server → đối chiếu AC4 (US-1.3) báo lệch dù dữ liệu giống hệt. | 🔴 Thêm `, billing_country` vào ORDER BY ở cả 3 dialect. |
 | 1.6 | `CONTRIBUTING.md` dẫn tới `AGENTS.md`, `docs/implementation-rules.md`, `docs/work-log.md` (không tồn tại) và quy ước nhánh `module/<scope>`, trong khi nhóm đang dùng `feat/...`. | Hướng dẫn đóng góp không khớp thực tế (copy từ repo toannq). | 🔴 Cần nhóm thống nhất và sửa lại. |
 | 1.7 | `data/chinook/README.md` ghi semantic mapping nằm ở `../scripts/semantic-*.json`, thực tế file ở `data/chinook/`. | Tài liệu chỉ sai chỗ. | 🔴 Sửa đường dẫn. |
@@ -66,6 +66,22 @@ Ghi lại để không lặp lại khi làm lại (đã được giải quyết 
 | 5.10 | Chưa có Maven Wrapper (đã thêm rồi hoàn tác theo yêu cầu người dùng); README dùng `mvn`. | 🟡 Người dùng tự thêm. |
 | 5.11 | Git cảnh báo LF/CRLF khi commit (repo chưa có `.gitattributes`). | 🟡 Không ảnh hưởng nội dung; có thể thêm `.gitattributes`. |
 
+## 5b. Port backend `dev.nla` từ toannq (11/11/2026, nhánh `feat/sprint1-be` và `feat/sprint2-be`)
+
+Backend `com.fsa.textsql` được thay bằng code `dev.nla` của toannq, cắt theo từng task Sprint 1/2. Các mục 5.1–5.8 ở trên thuộc bản cũ; các lỗi dưới đây phát hiện khi port và chạy thật (Keycloak + AI service thật + 3 kho Chinook: 138/138 câu mẫu thành công sau khi sửa).
+
+| # | Vấn đề | Trạng thái |
+|---|---|---|
+| 5b.1 | Discovery bỏ qua schema hệ thống có phân biệt hoa thường → SQL Server trả `INFORMATION_SCHEMA` nên 21 view hệ thống lọt vào dataset Chinook (32 thay vì 11 bảng), AI từ chối 1 câu hỏi. Lỗi có sẵn trong code toannq. | ✅ `2fe73c1` (`feat/sprint2-be`). Issue: #2 |
+| 5b.2 | Đường dẫn khóa RSA MySQL đọc từ `.local/docker.env` (nạp như `.properties`) mất dấu `\` → `S1009`, backend không khởi động khi chạy local. | ✅ `9033865`, `2fe73c1`. Issue: #3 |
+| 5b.3 | `POST /datasets` của toannq nhận `semanticVersion`/`schemaVersion` từ client, trái `domain.md` ("không lấy version từ UI"). | ✅ `6a20a3f`: server tự đặt. Issue: #4 |
+| 5b.4 | Response 401/403 thiếu `X-Correlation-ID` vì filter correlation chạy sau Spring Security. | ✅ Trong commit T-1.2.1 (`7169ff6`). Issue: #5 |
+| 5b.5 | Profile `local` của toannq cho GET ẩn danh và token local quyền admin (mục 3.1). | ✅ Không port; mọi request cần token thật. |
+| 5b.6 | `PYTHON_AI_TOKEN` rỗng trong `.local/docker.env` (mục 1.4) vẫn còn: query thật chỉ chạy khi tự đặt cùng token cho Java và Python. | 🔴 Cần AI/Data. Issue: #6 |
+| 5b.7 | File frontend chưa commit (tạo 10/11) không còn trên máy; nhánh port riêng của Toàn (`module/port-user-tts-features`, `module/focused-four-tabs`) trùng việc với nhánh BE. | 🔴 Cần nhóm xử lý. Issue: #7 (phần nhánh trùng việc; file frontend là việc trên máy cá nhân) |
+| 5b.8 | Thay đổi contract: `POST /datasets` không nhận version; Query có thêm `sourceTables`, `provider`; `POST /query` nhận `providerId` khi `mode=API`. | 🟡 Đã ghi trong `docs/contracts/public-api.md`; cần báo FE. |
+| 5b.9 | Đổi sang bản port làm Flyway history khác → phải tạo lại DB `nla_metadata` local. | 🟡 Ghi trong `backend/README.md`. |
+
 ## 6. Sai sót trong quá trình hỗ trợ (trợ lý/ môi trường)
 
 | # | Vấn đề |
@@ -75,3 +91,6 @@ Ghi lại để không lặp lại khi làm lại (đã được giải quyết 
 | 6.3 | Tự thêm Maven Wrapper khi người dùng muốn tự làm → đã hoàn tác. |
 | 6.4 | Lệnh dừng container + chạy tên Docker riêng bị hệ thống chặn tự động lần đầu; chạy lại sau khi người dùng đồng ý. |
 | 6.5 | PowerShell 5.1 không đọc được body của response 401 (tưởng body rỗng); kiểm tra lại bằng `curl` thì body đúng chuẩn. Không phải lỗi backend. |
+| 6.6 | (11/11) Commit `9033865` khi còn 1 test fail (chạy nối lệnh không dừng khi lỗi); sửa ngay ở `8603047`. |
+| 6.7 | (11/11) 2 commit Sprint 2 bị gộp nhầm file do một lệnh `git add` lỗi; đã tách lại bằng `git reset --soft` trước khi push. |
+| 6.8 | (11/11) Lần chạy thật đầu tiên quên đặt `PYTHON_AI_TOKEN` nên mọi query báo "AI chưa cấu hình"; không phải lỗi code. |
