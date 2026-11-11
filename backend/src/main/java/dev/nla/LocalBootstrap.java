@@ -87,9 +87,25 @@ public class LocalBootstrap implements ApplicationRunner {
     SecurityContextHolder.setContext(context);
     try {
       register();
+      grantLocalAccounts();
     } finally {
       SecurityContextHolder.clearContext();
     }
+  }
+
+  /**
+   * Sample grants for the local Keycloak accounts (subjects from .local/oidc/backend.env). ADMIN
+   * needs no grant; the viewer only gets PostgreSQL so "wrong warehouse -> 403" can be shown.
+   */
+  private void grantLocalAccounts() {
+    String analyst = env.getProperty("NLA_LOCAL_ANALYST_SUBJECT", "");
+    String viewer = env.getProperty("NLA_LOCAL_VIEWER_SUBJECT", "");
+    for (String warehouseId : List.of("wh-chinook-pg", "wh-chinook-mysql", "wh-chinook-mssql")) {
+      if (!analyst.isBlank() && store.exists("warehouse", warehouseId))
+        store.grantWarehouseAccess(warehouseId, analyst);
+    }
+    if (!viewer.isBlank() && store.exists("warehouse", "wh-chinook-pg"))
+      store.grantWarehouseAccess("wh-chinook-pg", viewer);
   }
 
   private void register() throws Exception {

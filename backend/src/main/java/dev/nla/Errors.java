@@ -84,7 +84,9 @@ public class Errors {
   }
 }
 
+// Runs before Spring Security so 401/403 responses also carry X-Correlation-ID.
 @Component
+@org.springframework.core.annotation.Order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
 class CorrelationFilter extends OncePerRequestFilter {
   protected void doFilterInternal(
       HttpServletRequest request, HttpServletResponse response, FilterChain chain)
