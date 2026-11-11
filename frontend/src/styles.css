@@ -1026,6 +1026,66 @@ main {
   width: 100%;
   margin-top: 16px;
 }
+.selected-dataset {
+  display: grid;
+  gap: 16px;
+}
+.selected-dataset h3 {
+  margin: 0 0 6px;
+}
+.selected-dataset > .muted {
+  margin: 0;
+}
+.dataset-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.dataset-facts span {
+  color: var(--muted);
+}
+.dataset-facts strong {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.home-example-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 10px;
+}
+.home-example {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.home-example:hover {
+  border-color: var(--blue);
+  background: #f4f9ff;
+}
+.home-example:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: 2px;
+}
+.home-example > span:nth-child(2) {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.home-example small {
+  color: var(--muted);
+  line-height: 1.5;
+}
 .capabilities {
   display: flex;
   justify-content: space-between;
