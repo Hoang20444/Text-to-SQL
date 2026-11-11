@@ -217,5 +217,25 @@ class ThreeEngineQueryIntegrationTest {
         .andExpect(jsonPath("$.result.rows[*].country", contains("JP", "US", "VN")))
         .andExpect(jsonPath("$.result.rows[2].total_amount").value("300.00"))
         .andExpect(jsonPath("$.result.columns[1].semanticRole").value("METRIC"));
+    // Without ORDER BY the row cap takes the other form (TOP on SQL Server, LIMIT elsewhere).
+    AI.answer("SELECT order_id, country FROM sales.orders");
+    mvc.perform(
+            post("/api/v1/query")
+                .header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin()))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    Json.write(
+                        Json.obj(
+                            "warehouseId",
+                            "wh-sales-" + engine,
+                            "datasetId",
+                            "ds-sales-" + engine,
+                            "question",
+                            "Danh sách đơn hàng?",
+                            "mode",
+                            "DETERMINISTIC"))))
+        .andExpect(jsonPath("$.status").value("SUCCESS"))
+        .andExpect(jsonPath("$.result.returnedRowCount").value(5))
+        .andExpect(jsonPath("$.result.truncated").value(false));
   }
 }

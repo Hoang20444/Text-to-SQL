@@ -63,7 +63,12 @@ class SqlGuardTest {
         "SELECT c.country, COUNT(*) AS n FROM public.invoice i"
             + " JOIN public.customer c ON c.customer_id = i.customer_id GROUP BY c.country",
         "SELECT billing_country FROM public.invoice WHERE billing_country = 'Drop; delete --'",
-        "SELECT total FROM invoice;"
+        "SELECT total FROM invoice;",
+        "SELECT billing_country FROM public.invoice UNION SELECT country FROM public.customer",
+        // Column names are resolved across the whole query, so a column that exists in both
+        // tables must be qualified inside subqueries (an unqualified one is rejected as ambiguous).
+        "SELECT i.billing_country FROM public.invoice i WHERE i.customer_id IN"
+            + " (SELECT c.customer_id FROM public.customer c WHERE c.country = 'VN')"
       })
   void safeReadsAreAccepted(String sql) {
     assertThat(pg(sql).sourceTables()).isNotEmpty();
@@ -95,6 +100,9 @@ class SqlGuardTest {
         "SELECT * FROM public.invoice -- comment",
         "/* hidden */ SELECT total FROM public.invoice",
         "WITH d AS (DELETE FROM public.invoice RETURNING *) SELECT * FROM d",
+        "SELECT billing_country FROM public.invoice UNION SELECT rolname FROM pg_catalog.pg_authid",
+        "SELECT total FROM public.invoice UNION SELECT total FROM public.secret_table",
+        "SELECT total FROM public.invoice WHERE invoice_id IN (SELECT id FROM pg_catalog.pg_class)",
         "SELECT total FROM otherdb.public.invoice",
         "SELECT customer_id FROM public.invoice i JOIN public.customer c"
             + " ON c.customer_id = i.customer_id",
@@ -184,8 +192,18 @@ class SqlGuardTest {
         .isEqualTo("SELECT * FROM (" + sql + ") AS nla_bounded LIMIT 1001");
     assertThat(new MySqlDialect().applySafeLimit(sql, 1001))
         .isEqualTo("SELECT * FROM (" + sql + ") AS nla_bounded LIMIT 1001");
-    // SQL Server keeps ORDER BY semantics; JDBC setMaxRows bounds the result instead.
-    assertThat(new SqlServerDialect().applySafeLimit(sql, 1001)).isEqualTo(sql);
+    // SQL Server: OFFSET/FETCH after ORDER BY, TOP on a plain SELECT, existing paging untouched.
+    var mssql = new SqlServerDialect();
+    assertThat(mssql.applySafeLimit(sql, 1001))
+        .isEqualTo(sql + " OFFSET 0 ROWS FETCH NEXT 1001 ROWS ONLY");
+    assertThat(mssql.applySafeLimit("SELECT [total] FROM [dbo].[invoice]", 1001))
+        .isEqualTo("SELECT TOP (1001) [total] FROM [dbo].[invoice]");
+    assertThat(
+            mssql.applySafeLimit(
+                "WITH s AS (SELECT [total] FROM [dbo].[invoice]) SELECT [total] FROM s", 5))
+        .contains("SELECT TOP (5) [total] FROM s");
+    String paged = "SELECT TOP (3) [total] FROM [dbo].[invoice] ORDER BY [total]";
+    assertThat(mssql.applySafeLimit(paged, 1001)).isEqualTo(paged);
     assertThatThrownBy(() -> new PostgreSqlDialect().applySafeLimit(sql, 0))
         .isInstanceOf(IllegalArgumentException.class);
   }
