@@ -39,6 +39,16 @@ final class FakeAi {
           exchange.getResponseBody().write(bytes);
           exchange.close();
         });
+    server.createContext(
+        "/internal/v1/model-provider/status",
+        exchange -> {
+          exchange.getRequestBody().readAllBytes();
+          byte[] bytes = "{\"provider\":null}".getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.close();
+        });
     server.start();
   }
 
