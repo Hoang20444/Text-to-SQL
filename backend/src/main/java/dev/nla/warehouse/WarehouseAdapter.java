@@ -25,6 +25,20 @@ public interface WarehouseAdapter {
   List<Map<String, Object>> discoverRelationships(
       Connection connection, String schema, String table) throws SQLException;
 
+  /** Runs one validated SELECT on a read-only connection, bounded by rows, bytes and time. */
+  Map<String, Object> executeReadOnlyQuery(
+      Map<String, Object> warehouse,
+      String password,
+      String sql,
+      int rows,
+      int bytes,
+      int timeoutSeconds)
+      throws SQLException;
+
+  String applySafeLimit(String sql, int maxRows);
+
+  void configureTimeout(Statement statement, int seconds) throws SQLException;
+
   String quoteIdentifier(String identifier);
 
   String normalizeIdentifier(Connection connection, String identifier, boolean quoted)

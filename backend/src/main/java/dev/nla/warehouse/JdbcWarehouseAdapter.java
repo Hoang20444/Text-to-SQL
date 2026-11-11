@@ -37,6 +37,14 @@ public abstract class JdbcWarehouseAdapter implements WarehouseAdapter {
     return Map.of("readOnlyQuery", true, "metadataDiscovery", true);
   }
 
+  public String applySafeLimit(String sql, int rows) {
+    return getSqlDialect().applySafeLimit(sql, rows);
+  }
+
+  public void configureTimeout(Statement stmt, int seconds) throws SQLException {
+    stmt.setQueryTimeout(seconds);
+  }
+
   public String quoteIdentifier(String id) {
     return getSqlDialect().quoteIdentifier(id);
   }
@@ -190,6 +198,103 @@ public abstract class JdbcWarehouseAdapter implements WarehouseAdapter {
       }
     }
     return rel;
+  }
+
+  public Map<String, Object> executeReadOnlyQuery(
+      Map<String, Object> w, String password, String sql, int maxRows, int maxBytes, int timeout)
+      throws SQLException {
+    try (Connection c = connect(w, password)) {
+      c.setReadOnly(true);
+      c.setAutoCommit(false);
+      try {
+        if (engine().equals("POSTGRESQL")) {
+          try (Statement config = c.createStatement()) {
+            config.execute("SET LOCAL statement_timeout = " + (timeout * 1000));
+          }
+        }
+        try (Statement statement = c.createStatement()) {
+          configureTimeout(statement, timeout);
+          statement.setMaxRows(maxRows + 1);
+          statement.setFetchSize(Math.min(maxRows + 1, 100));
+          try (ResultSet rs = statement.executeQuery(applySafeLimit(sql, maxRows + 1))) {
+            List<Map<String, Object>> columns = new ArrayList<>(), rows = new ArrayList<>();
+            var meta = rs.getMetaData();
+            Set<String> used = new HashSet<>();
+            for (int i = 1; i <= meta.getColumnCount(); i++) {
+              String label = meta.getColumnLabel(i), name = label;
+              int suffix = 2;
+              while (!used.add(name)) name = label + "_" + suffix++;
+              String type = canonicalType(meta.getColumnType(i));
+              columns.add(
+                  Json.obj(
+                      "name",
+                      name,
+                      "label",
+                      label,
+                      "dataType",
+                      type,
+                      "semanticRole",
+                      Set.of("INTEGER", "BIGINT", "DECIMAL", "FLOAT").contains(type)
+                          ? "METRIC"
+                          : Set.of("DATE", "TIMESTAMP").contains(type) ? "TIME" : "DIMENSION"));
+            }
+            int bytes = 0;
+            boolean truncated = false;
+            while (rs.next()) {
+              if (rows.size() == maxRows) {
+                truncated = true;
+                break;
+              }
+              Map<String, Object> row = new LinkedHashMap<>();
+              for (int i = 1; i <= columns.size(); i++) {
+                String type = columns.get(i - 1).get("dataType").toString();
+                Object value = rs.getObject(i);
+                if (value != null)
+                  value =
+                      switch (type) {
+                        case "DECIMAL" -> rs.getBigDecimal(i).toPlainString();
+                        case "BIGINT" -> rs.getString(i);
+                        case "BOOLEAN" -> rs.getBoolean(i);
+                        case "TIMESTAMP" -> {
+                          if (value instanceof OffsetDateTime od) yield od.toInstant().toString();
+                          if (value instanceof Timestamp ts)
+                            yield ts.toLocalDateTime().toInstant(ZoneOffset.UTC).toString();
+                          yield value.toString();
+                        }
+                        case "DATE" -> rs.getDate(i).toLocalDate().toString();
+                        case "FLOAT" -> rs.getDouble(i);
+                        case "INTEGER" -> rs.getInt(i);
+                        default -> value.toString();
+                      };
+                row.put(columns.get(i - 1).get("name").toString(), value);
+              }
+              int n = Json.write(row).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+              if (bytes + n > maxBytes) {
+                truncated = true;
+                break;
+              }
+              bytes += n;
+              rows.add(row);
+            }
+            return Json.obj(
+                "columns",
+                columns,
+                "rows",
+                rows,
+                "returnedRowCount",
+                rows.size(),
+                "page",
+                1,
+                "pageSize",
+                Math.min(100, Math.max(20, rows.size())),
+                "truncated",
+                truncated);
+          }
+        }
+      } finally {
+        c.rollback();
+      }
+    }
   }
 
   public static String canonicalType(int type) {

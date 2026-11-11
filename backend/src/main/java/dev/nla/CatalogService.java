@@ -72,6 +72,39 @@ public class CatalogService {
     return list;
   }
 
+  /**
+   * Semantic context sent to the AI service: the dataset's semantic model plus its live physical
+   * tables and the joins between allowed tables (discovered foreign keys and declared joins).
+   */
+  public Map<String, Object> context(String datasetId) {
+    var sem = new LinkedHashMap<>(store.semantic(datasetId));
+    var physical = tables(datasetId);
+    Set<String> allowed = new HashSet<>();
+    physical.forEach(t -> allowed.add(key(t)));
+    Map<String, Map<String, Object>> joins = new LinkedHashMap<>();
+    physical.stream()
+        .flatMap(t -> Json.objects(t.get("foreignKeys")).stream())
+        .filter(rel -> allowed.contains(key(Json.map(Json.map(rel.get("to")).get("table")))))
+        .forEach(rel -> joins.put(relationIdentity(rel), rel));
+    for (var rel : Json.objects(sem.get("relationships"))) {
+      if (allowed.contains(key(Json.map(Json.map(rel.get("from")).get("table"))))
+          && allowed.contains(key(Json.map(Json.map(rel.get("to")).get("table")))))
+        joins.put(relationIdentity(rel), rel);
+    }
+    sem.put("tables", physical);
+    sem.put("relationships", new ArrayList<>(joins.values()));
+    sem.put("referenceTime", java.time.Instant.now().toString());
+    return sem;
+  }
+
+  private static String relationIdentity(Map<String, Object> relation) {
+    var from = Json.map(relation.get("from"));
+    var to = Json.map(relation.get("to"));
+    String left = key(Json.map(from.get("table"))) + "." + Json.str(from, "column");
+    String right = key(Json.map(to.get("table"))) + "." + Json.str(to, "column");
+    return left.compareTo(right) < 0 ? left + "|" + right : right + "|" + left;
+  }
+
   static String key(Map<String, Object> table) {
     return Json.str(table, "schema") + "." + Json.str(table, "name");
   }
