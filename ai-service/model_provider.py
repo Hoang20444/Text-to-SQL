@@ -192,6 +192,8 @@ class ModelConfig(BaseModel):
     def endpoint_policy(self, info: ValidationInfo):
         parts = urlsplit(self.baseUrl)
         host = parts.hostname
+        if not host:
+            raise ValueError("Provider host is required")
         explicit = configured_hosts()
         allowed = DEFAULT_HOSTS | explicit
         # Environment settings were selected by the deployer. Their destination
