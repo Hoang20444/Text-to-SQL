@@ -4,11 +4,13 @@ Thư mục dành cho thành viên Backend triển khai theo Sprint Backlog (`doc
 
 ## Đã có (Sprint 1)
 
+Code backend được port từ repo toannq (package `dev.nla`) và cắt đúng phạm vi từng task Sprint 1.
+
 | Task | Nội dung |
 |---|---|
-| T-1.1.1 | Spring Boot 3.5 + Flyway, Metadata DB (`warehouses`, `datasets`), `GET /api/v1/warehouses`, `GET /api/v1/datasets`, error envelope + `X-Correlation-ID` |
-| T-1.2.1 | Keycloak realm `nla` với 3 tài khoản `admin`/`analyst`/`viewer`, Spring Security kiểm tra chữ ký JWT, `GET /api/v1/auth/session`, chặn quyền theo từng kho (bảng `warehouse_access`): không token → 401, sai kho → 403 |
-| T-1.3.2 | `POST /api/v1/query`: kiểm tra quyền kho → đọc cột thật của các bảng được phép → gọi Python AI lấy SQL ứng viên → kiểm tra chỉ một câu SELECT → chạy chỉ đọc (JDBC) trên PostgreSQL/MySQL/SQL Server → chuẩn hóa kết quả → lưu `query_history`. Kèm `GET /api/v1/datasets/{id}/examples` (câu hỏi gợi ý theo tập dữ liệu) |
+| T-1.1.1 | Spring Boot 3.5 + Flyway, Metadata DB lưu document jsonb (`warehouse`, `dataset`, `query_history`, `resource_access`, `audit_event`, `platform_settings`), adapter 3 engine (kết nối + đọc metadata), tự đăng ký 3 kho Chinook local, `GET /api/v1/warehouses[/{id}]`, `GET /api/v1/datasets[/{id}]` có phân trang/tìm kiếm/sắp xếp, error envelope + `X-Correlation-ID` |
+| T-1.2.1 | Keycloak realm `nla` với 3 tài khoản `admin`/`analyst`/`viewer`, Spring Security kiểm tra chữ ký JWT (issuer, audience, subject), `GET /api/v1/auth/session`, chặn quyền theo từng kho (bảng `resource_access`): không token → 401, thiếu vai trò hoặc sai kho → 403. Không có chế độ bỏ qua đăng nhập |
+| T-1.3.2 | `POST /api/v1/query`: kiểm tra quyền kho → dựng ngữ cảnh từ bảng thật được phép + semantic model → gọi Python AI lấy SQL ứng viên → kiểm tra chỉ một câu SELECT → kiểm tra lại quyền → chạy chỉ đọc trên PostgreSQL/MySQL/SQL Server với giới hạn dòng/byte/thời gian → lưu `query_history`. Kèm `GET /api/v1/query/{id}` và `GET /api/v1/query/history` |
 
 ## Sprint 2
 
@@ -35,19 +37,20 @@ Backend đọc cấu hình từ biến môi trường hoặc các file trong `.l
 | `OIDC_AUDIENCE` | Audience bắt buộc trong token (mặc định `nla-api`) |
 | `OIDC_JWK_SET_URI` | Chỉ cần khi backend gọi Keycloak qua địa chỉ khác issuer (ví dụ trong Docker) |
 | `NLA_LOCAL_ANALYST_SUBJECT`, `NLA_LOCAL_VIEWER_SUBJECT` | ID tài khoản mẫu để cấp quyền kho khi chạy local |
-| `PYTHON_AI_URL` | Địa chỉ Python AI service (mặc định `http://127.0.0.1:8000`) |
+| `PYTHON_AI_URL` | Địa chỉ Python AI service, ví dụ `http://127.0.0.1:8000` (`docker_chinook.py` ghi sẵn vào `.local/docker.env`) |
+| `WAREHOUSE_ALLOWED_HOSTS` | Danh sách host kho được phép kết nối (mặc định `127.0.0.1,localhost`) |
 | `PYTHON_AI_TOKEN` | Service token dùng chung giữa Java và Python (≥ 32 ký tự). Phải đặt **cùng giá trị** cho cả hai tiến trình; không có trong Git |
 | `NLA_MYSQL_RSA_PUBLIC_KEY` | File khóa RSA của MySQL do `docker_chinook.py` lưu (dùng để đăng nhập MySQL 8 không cần TLS) |
 
-Mật khẩu kho dữ liệu không lưu trong DB: bảng `warehouses` chỉ giữ `credential_reference` dạng `env:NLA_CHINOOK_PG_PASSWORD`, và API không bao giờ trả trường này. Backend không lưu mật khẩu người dùng: chỉ kiểm tra token do Keycloak ký.
+Mật khẩu kho dữ liệu không lưu trong DB: bảng `warehouse` chỉ giữ `credential_reference` dạng `env:NLA_CHINOOK_PG_PASSWORD`, và API không bao giờ trả trường này. Backend không lưu mật khẩu người dùng: chỉ kiểm tra token do Keycloak ký.
 
 ## Phân quyền
 
 | Vai trò | Kho được dùng (local) |
 |---|---|
 | `ADMIN` | Tất cả kho |
-| `ANALYST` | Kho được cấp trong `warehouse_access` (local: cả 3 kho) |
-| `VIEWER` | Kho được cấp trong `warehouse_access` (local: chỉ `wh-chinook-pg`) |
+| `ANALYST` | Kho được cấp trong `resource_access` (local: cả 3 kho) |
+| `VIEWER` | Kho được cấp trong `resource_access` (local: chỉ `wh-chinook-pg`) |
 
 Mọi `/api/v1/*` cần header `Authorization: Bearer <token>`. Chi tiết trong `docs/contracts/public-api.md` (mục Auth).
 
@@ -75,7 +78,9 @@ cd backend
 mvn spring-boot:run
 ```
 
-Hỏi một câu mẫu (Sprint 1 dùng chế độ `DETERMINISTIC`: Python chỉ trả SQL cho câu hỏi khớp một câu mẫu của tập dữ liệu, xem `GET /api/v1/datasets/{id}/examples`):
+> Đổi từ bản `com.fsa.textsql` cũ sang bản port này thì Flyway history khác nhau: xóa và tạo lại database `nla_metadata` trước khi chạy (dữ liệu trong đó chỉ là metadata local, tự đăng ký lại khi khởi động).
+
+Hỏi một câu mẫu (chế độ `DETERMINISTIC`: Python chỉ trả SQL cho câu hỏi khớp một câu mẫu trong `data/chinook/semantic-*.json`):
 
 ```bash
 TOKEN=$(python infra/local/oidc.py token analyst)
@@ -84,7 +89,7 @@ curl -X POST http://localhost:8080/api/v1/query \
   -d '{"warehouseId":"wh-chinook-mysql","datasetId":"ds-chinook-mysql","question":"How many tracks are in the catalog?","mode":"DETERMINISTIC"}'
 ```
 
-`VIEWER` chỉ được xem, không được chạy truy vấn (403). Kết quả trả tối đa 1000 dòng (`returnedRowCount`, `truncated`), `rows` chứa 100 dòng đầu; DECIMAL/BIGINT là chuỗi để không mất độ chính xác, thời gian là ISO-8601 UTC.
+`VIEWER` chỉ được xem, không được chạy truy vấn (403). Lỗi sau khi đã tạo truy vấn (AI từ chối, SQL không an toàn, lỗi kho) vẫn trả `201` với `status` (`REJECTED`, `VALIDATION_ERROR`, `QUERY_ERROR`, `TIMEOUT`) và `error` kèm `queryId`. Kết quả tối đa 1000 dòng / 5 MB (`returnedRowCount`, `truncated`), response trả 20 dòng đầu; DECIMAL/BIGINT là chuỗi để không mất độ chính xác, thời gian là ISO-8601 UTC.
 
 Kiểm tra nhanh (lấy token của tài khoản mẫu từ Keycloak local):
 
@@ -104,4 +109,4 @@ cd backend
 mvn test
 ```
 
-Test tích hợp dùng Testcontainers (PostgreSQL 16) nên cần Docker đang chạy. Test phân quyền tự ký token RS256 và kiểm tra bằng đúng bộ validator của production (chữ ký, hạn, issuer, audience).
+Test tích hợp dùng Testcontainers (PostgreSQL 16, MySQL 8.4, SQL Server 2022) nên cần Docker đang chạy. Test phân quyền tự ký token RS256 và kiểm tra bằng đúng bộ validator của production (chữ ký, hạn, issuer, audience). Python AI được thay bằng HTTP server giả chỉ trong test; chạy với AI service thật làm theo mục Chạy ở trên.
