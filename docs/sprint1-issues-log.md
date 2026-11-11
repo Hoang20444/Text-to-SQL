@@ -1,4 +1,4 @@
-﻿# Nhật ký lỗi & vấn đề — Sprint 1 (BE)
+# Nhật ký lỗi & vấn đề — Sprint 1 (BE)
 
 Ghi lại mọi lỗi/vấn đề phát hiện trong quá trình làm Sprint 1 BE (09/11/2026), kèm người/phần phụ trách và trạng thái. "Phụ trách" lấy theo tác giả commit hoặc vai trò trong backlog, không nhằm quy lỗi cá nhân mà để biết ai cần xử lý.
 
