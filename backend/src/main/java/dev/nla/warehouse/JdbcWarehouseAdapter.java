@@ -7,9 +7,16 @@ import java.util.*;
 
 public abstract class JdbcWarehouseAdapter implements WarehouseAdapter {
   protected final boolean tls;
+  private final String mysqlRsaPublicKey;
 
   protected JdbcWarehouseAdapter(boolean tls) {
+    this(tls, "");
+  }
+
+  /** mysqlRsaPublicKey: MySQL 8 server key file for caching_sha2 login without TLS (local). */
+  protected JdbcWarehouseAdapter(boolean tls, String mysqlRsaPublicKey) {
     this.tls = tls;
+    this.mysqlRsaPublicKey = mysqlRsaPublicKey == null ? "" : mysqlRsaPublicKey;
   }
 
   protected abstract String jdbcUrl(Map<String, Object> w);
@@ -21,8 +28,8 @@ public abstract class JdbcWarehouseAdapter implements WarehouseAdapter {
     props.setProperty("connectTimeout", engine().equals("POSTGRESQL") ? "5" : "5000");
     props.setProperty("socketTimeout", engine().equals("POSTGRESQL") ? "20" : "20000");
     if (engine().equals("MYSQL") && !tls) {
-      String key = System.getenv("NLA_MYSQL_RSA_PUBLIC_KEY");
-      if (key != null && !key.isBlank()) props.setProperty("serverRSAPublicKeyFile", key);
+      if (!mysqlRsaPublicKey.isBlank())
+        props.setProperty("serverRSAPublicKeyFile", mysqlRsaPublicKey);
     }
     return DriverManager.getConnection(jdbcUrl(w), props);
   }

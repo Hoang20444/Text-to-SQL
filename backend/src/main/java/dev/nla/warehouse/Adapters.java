@@ -23,7 +23,7 @@ public class Adapters {
             "POSTGRESQL",
             new PostgreSqlWarehouseAdapter(tls),
             "MYSQL",
-            new MySqlWarehouseAdapter(tls),
+            new MySqlWarehouseAdapter(tls, env.getProperty("NLA_MYSQL_RSA_PUBLIC_KEY", "")),
             "SQL_SERVER",
             new SqlServerWarehouseAdapter(tls));
     hosts =

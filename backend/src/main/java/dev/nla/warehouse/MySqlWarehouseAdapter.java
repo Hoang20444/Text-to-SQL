@@ -5,7 +5,11 @@ import java.util.Map;
 
 public final class MySqlWarehouseAdapter extends JdbcWarehouseAdapter {
   public MySqlWarehouseAdapter(boolean tls) {
-    super(tls);
+    this(tls, "");
+  }
+
+  public MySqlWarehouseAdapter(boolean tls, String rsaPublicKey) {
+    super(tls, rsaPublicKey);
   }
 
   public String engine() {
