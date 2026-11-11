@@ -202,7 +202,13 @@ class WarehouseRegistryIntegrationTest {
         json(
             as(TestJwt.admin(), post("/api/v1/warehouses/" + id + "/discover"), null)
                 .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.status").value("SUCCESS")));
+                .andExpect(jsonPath("$.status").value("SUCCESS"))
+                .andExpect(
+                    jsonPath("$.schemaVersion")
+                        .value(org.hamcrest.Matchers.matchesPattern("sha256:[0-9a-f]{16}"))));
+    as(TestJwt.admin(), get("/api/v1/warehouses/" + id), null)
+        .andExpect(jsonPath("$.schemaVersion").value(Json.str(run, "schemaVersion")))
+        .andExpect(jsonPath("$.lastDiscoveredAt").exists());
     assertThat(Json.objects(Json.map(run.get("metadata")).get("schemas")))
         .extracting(s -> Json.str(s, "name").toLowerCase())
         .doesNotContain("information_schema", "sys", "pg_catalog", "mysql");
@@ -282,13 +288,22 @@ class WarehouseRegistryIntegrationTest {
         as(TestJwt.admin(), post("/api/v1/warehouses/" + id + "/test"), null)
             .andExpect(jsonPath("$.reachable").value(false))
             .andExpect(jsonPath("$.error.code").value("WAREHOUSE_CONNECTION_ERROR"))
+            .andExpect(jsonPath("$.error.details.reason").value("AUTHENTICATION_FAILED"))
             .andReturn()
             .getResponse()
             .getContentAsString();
     assertThat(body).doesNotContain("definitely-not-the-password", "password authentication");
     as(TestJwt.admin(), post("/api/v1/warehouses/" + id + "/discover"), null)
         .andExpect(jsonPath("$.status").value("FAILED"))
-        .andExpect(jsonPath("$.error.code").value("WAREHOUSE_CONNECTION_ERROR"));
+        .andExpect(jsonPath("$.error.code").value("WAREHOUSE_CONNECTION_ERROR"))
+        .andExpect(jsonPath("$.error.details.reason").value("AUTHENTICATION_FAILED"));
+    // A database name that does not exist is reported separately.
+    var missingDb = connection("POSTGRESQL");
+    missingDb.put("database", "no_such_database");
+    String other =
+        Json.str(json(as(TestJwt.admin(), post("/api/v1/warehouses"), missingDb)), "warehouseId");
+    as(TestJwt.admin(), post("/api/v1/warehouses/" + other + "/test"), null)
+        .andExpect(jsonPath("$.error.details.reason").value("DATABASE_NOT_FOUND"));
     as(TestJwt.admin(), get("/api/v1/warehouses/" + id), null)
         .andExpect(jsonPath("$.status").value("UNAVAILABLE"));
   }

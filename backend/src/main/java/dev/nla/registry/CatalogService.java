@@ -52,7 +52,8 @@ public class CatalogService {
       throw new ApiException(
           HttpStatus.SERVICE_UNAVAILABLE,
           "WAREHOUSE_CONNECTION_ERROR",
-          "Không kết nối được warehouse hoặc không đọc được metadata.");
+          "Không kết nối được warehouse hoặc không đọc được metadata.",
+          Json.obj("reason", ConnectionDiagnosis.reason(e)));
     }
   }
 

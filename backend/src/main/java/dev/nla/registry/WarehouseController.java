@@ -7,6 +7,7 @@ import dev.nla.common.Page;
 import dev.nla.common.Requests;
 import dev.nla.store.Store;
 import dev.nla.warehouse.Adapters;
+import dev.nla.warehouse.ConnectionDiagnosis;
 import java.time.*;
 import java.util.*;
 import org.springframework.http.*;
@@ -138,10 +139,15 @@ public class WarehouseController {
     var w = store.warehouse(id);
     long start = System.nanoTime();
     boolean reachable = false;
+    String reason = null;
     try {
       reachable = adapters.get(w).testConnection(w, adapters.password(store.credential(id)));
-    } catch (Exception ignored) {
-      // The cause stays server-side; the response never carries driver messages or secrets.
+      if (!reachable) reason = "CONNECTION_FAILED";
+    } catch (java.sql.SQLException e) {
+      // Only a reason code is returned; driver messages and secrets stay server-side.
+      reason = ConnectionDiagnosis.reason(e);
+    } catch (ApiException e) {
+      reason = e.status == HttpStatus.FORBIDDEN ? "HOST_NOT_ALLOWED" : "CREDENTIAL_NOT_CONFIGURED";
     }
     if (!Json.str(w, "status").equals("DISABLED")) {
       w.put("status", reachable ? "ACTIVE" : "UNAVAILABLE");
@@ -161,7 +167,9 @@ public class WarehouseController {
         reachable
             ? null
             : Errors.body(
-                "WAREHOUSE_CONNECTION_ERROR", "Không thể kết nối warehouse.", Json.obj()));
+                "WAREHOUSE_CONNECTION_ERROR",
+                ConnectionDiagnosis.message(reason),
+                Json.obj("reason", reason)));
   }
 
   @PostMapping("/warehouses/{id}/discover")
@@ -188,6 +196,16 @@ public class WarehouseController {
     store.run(runId, "DISCOVERY", run);
     try {
       var tables = catalog.discover(id, true);
+      String schemaVersion = CatalogService.schemaVersion(tables);
+      run.put("schemaVersion", schemaVersion);
+      run.put("tableCount", tables.size());
+      // A successful discovery proves the connection and records the structure version.
+      var w = store.warehouse(id);
+      w.put("schemaVersion", schemaVersion);
+      w.put("lastDiscoveredAt", Instant.now().toString());
+      if (!Json.str(w, "status").equals("DISABLED")) w.put("status", "ACTIVE");
+      w.put("updatedAt", Instant.now().toString());
+      store.updateWarehouse(w, null);
       var schemas = new TreeMap<String, List<Map<String, Object>>>();
       for (var table : tables)
         schemas.computeIfAbsent(Json.str(table, "schema"), k -> new ArrayList<>()).add(table);
@@ -201,7 +219,7 @@ public class WarehouseController {
       run.put("status", "SUCCESS");
     } catch (ApiException e) {
       run.put("status", "FAILED");
-      run.put("error", Errors.body(e.code, e.getMessage(), Json.obj()));
+      run.put("error", Errors.body(e.code, e.getMessage(), e.details));
     }
     run.put("completedAt", Instant.now().toString());
     store.run(runId, "DISCOVERY", run);
