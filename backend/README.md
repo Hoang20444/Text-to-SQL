@@ -132,3 +132,5 @@ mvn test
 ```
 
 Test tích hợp dùng Testcontainers (PostgreSQL 16, MySQL 8.4, SQL Server 2022) nên cần Docker đang chạy. Test phân quyền tự ký token RS256 và kiểm tra bằng đúng bộ validator của production (chữ ký, hạn, issuer, audience). Python AI được thay bằng HTTP server giả chỉ trong test; chạy với AI service thật làm theo mục Chạy ở trên.
+
+CI (`.github/workflows/ci.yml`, job `backend`) chạy kiểm tra format và `mvn test` trên GitHub Actions mỗi khi push lên `main`, `develop`, `feat/**` hoặc mở PR vào `main`/`develop`. Trước khi push nên chạy `mvn com.spotify.fmt:fmt-maven-plugin:2.25:format` để không bị lỗi format.
