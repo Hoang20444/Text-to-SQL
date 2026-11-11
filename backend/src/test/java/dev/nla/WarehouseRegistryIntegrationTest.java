@@ -242,13 +242,13 @@ class WarehouseRegistryIntegrationTest {
                         "allowedTables",
                         List.of(
                             Json.obj("schema", "shop", "name", "customer"),
-                            Json.obj("schema", "shop", "name", "orders")),
-                        "semanticVersion",
-                        "0.0.0",
-                        "schemaVersion",
-                        "shop-1"))
+                            Json.obj("schema", "shop", "name", "orders"))))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.status").value("ACTIVE")));
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.semanticVersion").value("0.0.0"))
+                .andExpect(
+                    jsonPath("$.schemaVersion")
+                        .value(org.hamcrest.Matchers.matchesPattern("sha256:[0-9a-f]{16}"))));
     String ds = Json.str(dataset, "datasetId");
 
     as(TestJwt.admin(), get("/api/v1/datasets/" + ds + "/catalog"), null)
@@ -332,11 +332,23 @@ class WarehouseRegistryIntegrationTest {
                 "allowedSchemas",
                 List.of("shop"),
                 "allowedTables",
-                List.of(Json.obj("schema", "shop", "name", "nope")),
-                "semanticVersion",
-                "0.0.0",
+                List.of(Json.obj("schema", "shop", "name", "nope"))))
+        .andExpect(status().isBadRequest());
+    // Versions are set by the server; a client-supplied version is rejected.
+    as(
+            TestJwt.admin(),
+            post("/api/v1/datasets"),
+            Json.obj(
+                "warehouseId",
+                id,
+                "name",
+                "Versioned",
+                "allowedSchemas",
+                List.of("shop"),
+                "allowedTables",
+                List.of(Json.obj("schema", "shop", "name", "customer")),
                 "schemaVersion",
-                "shop-1"))
+                "client-made"))
         .andExpect(status().isBadRequest());
     String ds =
         Json.str(
@@ -352,11 +364,7 @@ class WarehouseRegistryIntegrationTest {
                         "allowedSchemas",
                         List.of("shop"),
                         "allowedTables",
-                        List.of(Json.obj("schema", "shop", "name", "customer")),
-                        "semanticVersion",
-                        "0.0.0",
-                        "schemaVersion",
-                        "shop-1"))),
+                        List.of(Json.obj("schema", "shop", "name", "customer"))))),
             "datasetId");
     as(TestJwt.admin(), patch("/api/v1/datasets/" + ds), Json.obj("status", "DISABLED"))
         .andExpect(status().isOk())

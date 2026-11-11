@@ -243,17 +243,8 @@ public class RegistryController {
   @PostMapping("/datasets")
   @PreAuthorize("hasRole('ADMIN')")
   ResponseEntity<?> createDataset(@RequestBody Map<String, Object> b) {
-    fields(
-        b,
-        Set.of(
-            "warehouseId",
-            "name",
-            "description",
-            "allowedSchemas",
-            "allowedTables",
-            "semanticVersion",
-            "schemaVersion"));
-    required(b, "warehouseId", "name", "semanticVersion", "schemaVersion");
+    fields(b, Set.of("warehouseId", "name", "description", "allowedSchemas", "allowedTables"));
+    required(b, "warehouseId", "name");
     String warehouse = Json.str(b, "warehouseId");
     var discovered = catalog.discover(warehouse, false);
     var allow = Json.objects(b.get("allowedTables"));
@@ -264,12 +255,25 @@ public class RegistryController {
     if (!(b.get("allowedSchemas") instanceof List<?> schemas)
         || allow.stream().anyMatch(t -> !schemas.contains(t.get("schema"))))
       throw ApiException.bad("Allowlist schema không hợp lệ.");
+    // Versions come from the server, never from the UI (docs/contracts/domain.md).
+    String schemaVersion =
+        CatalogService.schemaVersion(
+            discovered.stream()
+                .filter(
+                    t ->
+                        allow.stream()
+                            .anyMatch(a -> CatalogService.key(a).equals(CatalogService.key(t))))
+                .toList());
     String id = Json.id("ds");
     var d = new LinkedHashMap<>(b);
     d.putAll(
         Json.obj(
             "datasetId",
             id,
+            "semanticVersion",
+            "0.0.0",
+            "schemaVersion",
+            schemaVersion,
             "status",
             "ACTIVE",
             "createdAt",
@@ -293,9 +297,9 @@ public class RegistryController {
             "timezone",
             "UTC",
             "semanticVersion",
-            b.get("semanticVersion"),
+            "0.0.0",
             "schemaVersion",
-            b.get("schemaVersion"));
+            schemaVersion);
     store.insertDataset(d, sem);
     store.audit("DATASET_REGISTER", id);
     return ResponseEntity.status(201).body(d);

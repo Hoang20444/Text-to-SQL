@@ -205,6 +205,33 @@ public class CatalogService {
     return left.compareTo(right) < 0 ? left + "|" + right : right + "|" + left;
   }
 
+  /** sha256:<16 hex> over tables, columns, types, keys; the same structure gives the same value. */
+  static String schemaVersion(List<Map<String, Object>> tables) {
+    var canonical = new TreeMap<String, Object>();
+    for (var t : tables) {
+      var columns = new TreeMap<String, Object>();
+      Json.objects(t.get("columns"))
+          .forEach(
+              c ->
+                  columns.put(
+                      Json.str(c, "name"), Json.str(c, "dataType") + ":" + c.get("nullable")));
+      canonical.put(
+          key(t),
+          Json.obj(
+              "columns", columns,
+              "primaryKey", t.get("primaryKey"),
+              "foreignKeys", t.get("foreignKeys")));
+    }
+    try {
+      byte[] hash =
+          java.security.MessageDigest.getInstance("SHA-256")
+              .digest(Json.write(canonical).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      return "sha256:" + java.util.HexFormat.of().formatHex(hash).substring(0, 16);
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
   static String key(Map<String, Object> table) {
     return Json.str(table, "schema") + "." + Json.str(table, "name");
   }
