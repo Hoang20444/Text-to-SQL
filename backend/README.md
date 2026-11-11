@@ -22,6 +22,24 @@ Code backend được port từ repo toannq (package `dev.nla`) và cắt đúng
 
 Luồng cho một kho mới (ADMIN): đăng ký → `test` → `discover` → tạo dataset → xem Catalog.
 
+## Cấu trúc code
+
+Mỗi package một nhóm chức năng (`src/main/java/dev/nla/`); test nằm ở package tương ứng trong `src/test/java/dev/nla/`.
+
+| Package | Nội dung |
+|---|---|
+| `dev.nla` | `Application` (điểm khởi động) |
+| `common` | Dùng chung: `ApiException`, `Errors` (error envelope + xử lý lỗi toàn cục), `CorrelationFilter` (`X-Correlation-ID`), `Json`, `Page` (phân trang), `Requests` (kiểm tra trường request) |
+| `security` | `Security` (JWT, vai trò), `SessionController` (`/auth/session`) |
+| `store` | `Store`: đọc/ghi Metadata DB và kiểm tra quyền theo kho |
+| `registry` | `WarehouseController`, `DatasetController`, `CatalogController`, `CatalogService` (đọc cấu trúc bảng), `LocalBootstrap` (3 kho Chinook local) |
+| `query` | `QueryController`, `QueryService` (luồng hỏi → SQL → chạy), `SqlGuard` (gác cổng SQL), `QueryDeadline` |
+| `ai` | `AiClient`: gọi Python AI service |
+| `modelprovider` | Cấu hình model AI: controller, service, `ModelProviderSecrets` (AES-GCM), `ModelProviderPolicy` (host/URL được phép) |
+| `warehouse` | Kết nối 3 engine: `Adapters`, `WarehouseAdapter`, `JdbcWarehouseAdapter` và adapter từng engine; `warehouse.dialect` chứa phương ngữ SQL |
+
+Tài nguyên: `db/migration/` (Flyway cho Metadata DB), `warehouse/` (câu SQL đọc mô tả bảng/cột của từng engine). Test dùng chung `support/` (`TestJwt` ký token thật, `FakeAi` thay AI service, `RegistryFixture` dữ liệu registry mẫu).
+
 ## Cấu hình
 
 Backend đọc cấu hình từ biến môi trường hoặc các file trong `.local/` (đã bị Git ignore):

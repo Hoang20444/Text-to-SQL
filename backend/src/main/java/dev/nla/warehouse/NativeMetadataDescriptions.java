@@ -88,7 +88,7 @@ public final class NativeMetadataDescriptions {
     paths.forEach(
         (engine, filename) -> {
           try (var resource =
-              NativeMetadataDescriptions.class.getResourceAsStream("/metadata/" + filename)) {
+              NativeMetadataDescriptions.class.getResourceAsStream("/warehouse/" + filename)) {
             if (resource == null) throw new IOException("Missing metadata query resource.");
             result.put(engine, new String(resource.readAllBytes(), StandardCharsets.UTF_8));
           } catch (IOException error) {

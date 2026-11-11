@@ -1,5 +1,6 @@
 package dev.nla.warehouse;
 
+import dev.nla.warehouse.dialect.SqlDialect;
 import java.sql.*;
 import java.util.*;
 

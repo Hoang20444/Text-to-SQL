@@ -1,6 +1,8 @@
 package dev.nla.warehouse;
 
-import dev.nla.Json;
+import dev.nla.common.Json;
+import dev.nla.warehouse.dialect.PostgreSqlDialect;
+import dev.nla.warehouse.dialect.SqlDialect;
 import java.util.Map;
 
 public final class PostgreSqlWarehouseAdapter extends JdbcWarehouseAdapter {

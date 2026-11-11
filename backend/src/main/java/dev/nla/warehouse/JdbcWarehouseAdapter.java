@@ -1,6 +1,6 @@
 package dev.nla.warehouse;
 
-import dev.nla.Json;
+import dev.nla.common.Json;
 import java.sql.*;
 import java.time.*;
 import java.util.*;
