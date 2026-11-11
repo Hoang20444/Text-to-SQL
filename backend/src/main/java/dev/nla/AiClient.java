@@ -74,7 +74,7 @@ public class AiClient {
       var response =
           http.send(
               HttpRequest.newBuilder(uri)
-                  .timeout(Duration.ofSeconds(55))
+                  .timeout(Duration.ofSeconds(QueryDeadline.seconds(55)))
                   .header("Content-Type", "application/json")
                   .header("X-Execution-Mode", mode)
                   .header("Authorization", "Bearer " + token)

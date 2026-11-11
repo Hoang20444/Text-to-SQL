@@ -8,8 +8,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 /**
- * Question -> AI candidate SQL -> Java read-only check -> bounded execution -> query history
- * (T-1.3.2). Python never executes SQL; Java re-authorizes before using the reader credential.
+ * Question -> AI candidate SQL -> SQL guard (AST, table/column allowlist, dialect) -> bounded
+ * execution -> query history (T-1.3.2, guard and deadline T-2.2.1). Python never executes SQL; Java
+ * re-authorizes before using the reader credential.
  */
 @Service
 public class QueryService {
@@ -17,12 +18,14 @@ public class QueryService {
   private final CatalogService catalog;
   private final Adapters adapters;
   private final AiClient ai;
+  private final SqlGuard guard;
 
-  public QueryService(Store s, CatalogService c, Adapters a, AiClient ai) {
+  public QueryService(Store s, CatalogService c, Adapters a, AiClient ai, SqlGuard guard) {
     store = s;
     catalog = c;
     adapters = a;
     this.ai = ai;
+    this.guard = guard;
   }
 
   public Map<String, Object> run(Map<String, Object> b) {
@@ -94,6 +97,8 @@ public class QueryService {
             List.of(),
             "selectedDimensions",
             List.of(),
+            "sourceTables",
+            List.of(),
             "result",
             null,
             "chart",
@@ -103,6 +108,7 @@ public class QueryService {
             "owner",
             store.actor());
     store.putQuery(q);
+    QueryDeadline.start();
     try {
       var context = catalog.context(Json.str(d, "datasetId"));
       var request =
@@ -120,6 +126,7 @@ public class QueryService {
               "semanticContext",
               context);
       var candidate = ai.generate(request, mode);
+      QueryDeadline.check();
       q.put("model", candidate.get("model"));
       q.put("candidateSql", candidate.get("sql"));
       for (String field : List.of("selectedMetrics", "selectedDimensions")) {
@@ -132,8 +139,14 @@ public class QueryService {
               "SQL_VALIDATION_ERROR",
               "AI chọn metric hoặc dimension ngoài semantic context.");
       }
-      String sql = ReadOnlySqlCheck.requireSingleSelect(Json.str(candidate, "sql"));
+      var validated =
+          guard.validate(
+              Json.str(candidate, "sql"),
+              Json.str(w, "engine"),
+              Json.objects(context.get("tables")));
+      String sql = validated.sql();
       q.put("generatedSql", sql);
+      q.put("sourceTables", validated.sourceTables());
       // The AI call can outlive a grant revocation or registry change: re-check before running.
       var currentWarehouse = store.warehouse(Json.str(w, "warehouseId"));
       var currentDataset = store.dataset(Json.str(d, "datasetId"));
@@ -142,6 +155,7 @@ public class QueryService {
             HttpStatus.CONFLICT,
             "SCHEMA_MISMATCH",
             "Warehouse hoặc cấu hình dataset đã thay đổi; chạy lại với metadata hiện tại.");
+      QueryDeadline.check();
       var limits = Json.map(store.settings().get("limits"));
       var result =
           adapters
@@ -152,7 +166,9 @@ public class QueryService {
                   sql,
                   ((Number) limits.get("maxRows")).intValue(),
                   ((Number) limits.get("maxBytes")).intValue(),
-                  Math.max(1, ((Number) limits.get("statementTimeoutMs")).intValue() / 1000));
+                  QueryDeadline.seconds(
+                      Math.max(1, ((Number) limits.get("statementTimeoutMs")).intValue() / 1000)));
+      QueryDeadline.check();
       q.put("result", result);
       q.put("chart", candidate.get("chartRecommendation"));
       q.put("explanation", candidate.get("explanation"));
@@ -186,6 +202,8 @@ public class QueryService {
       q.put(
           "error",
           Errors.body("QUERY_ERROR", "Không xử lý được truy vấn.", Json.obj("queryId", id)));
+    } finally {
+      QueryDeadline.clear();
     }
     q.put("completedAt", Instant.now().toString());
     q.put("latencyMs", (System.nanoTime() - start) / 1000000);
@@ -261,6 +279,7 @@ public class QueryService {
                       "assumptions",
                       "selectedMetrics",
                       "selectedDimensions",
+                      "sourceTables",
                       "explanation",
                       "completedAt",
                       "sqlDialect")) out.remove(key);

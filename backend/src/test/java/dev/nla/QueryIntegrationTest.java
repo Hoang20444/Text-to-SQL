@@ -266,8 +266,27 @@ class QueryIntegrationTest {
   }
 
   @Test
-  void warehouseErrorIsSanitized() throws Exception {
+  void guardRejectsUnknownColumnsAndOtherTables() throws Exception {
     AI.answer("SELECT no_such_column FROM sales.orders");
+    ask(TestJwt.analyst(), question("pg"))
+        .andExpect(jsonPath("$.status").value("REJECTED"))
+        .andExpect(jsonPath("$.error.code").value("SQL_SECURITY_ERROR"));
+    AI.answer("SELECT id FROM public.warehouse");
+    ask(TestJwt.analyst(), question("pg"))
+        .andExpect(jsonPath("$.status").value("REJECTED"))
+        .andExpect(jsonPath("$.error.code").value("SQL_SECURITY_ERROR"));
+  }
+
+  @Test
+  void sourceTablesAreRecorded() throws Exception {
+    ask(TestJwt.analyst(), question("pg"))
+        .andExpect(jsonPath("$.sourceTables[0].schema").value("sales"))
+        .andExpect(jsonPath("$.sourceTables[0].name").value("orders"));
+  }
+
+  @Test
+  void warehouseErrorIsSanitized() throws Exception {
+    AI.answer("SELECT country, SUM(amount) / 0 AS ratio FROM sales.orders GROUP BY country");
     String body =
         ask(TestJwt.analyst(), question("pg"))
             .andExpect(jsonPath("$.status").value("QUERY_ERROR"))
@@ -275,7 +294,7 @@ class QueryIntegrationTest {
             .andReturn()
             .getResponse()
             .getContentAsString();
-    assertThat(body).doesNotContain("no_such_column does not exist", "PSQLException");
+    assertThat(body).doesNotContain("division by zero", "PSQLException");
   }
 
   @Test
