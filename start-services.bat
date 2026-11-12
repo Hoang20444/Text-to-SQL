@@ -16,7 +16,7 @@ if %errorlevel% equ 0 (
     echo   -^> Python AI Service da dang chay tren cong 8000.
 ) else (
     echo   -^> Dang khoi dong Python AI Service...
-    start "Python AI Service (Port 8000)" powershell -NoExit -Command "cd D:\MyP\Text-to-SQL-1\ai-service; .\.venv\Scripts\Activate.ps1; $env:PYTHON_AI_TOKEN='Nla_ynJKqNl7nFl_nX3M5zUc1fyYKOJyJ_w02jH29!'; $env:LLM_TIMEOUT_MS='55000'; uvicorn app:app --host 127.0.0.1 --port 8000"
+    start "Python AI Service (Port 8000)" powershell -NoExit -Command "cd D:\MyP\Text-to-SQL-1\ai-service; .\.venv\Scripts\Activate.ps1; $env:PYTHON_AI_TOKEN='Nla_ynJKqNl7nFl_nX3M5zUc1fyYKOJyJ_w02jH29!'; $env:LLM_TIMEOUT_MS='55000'; $env:LLM_MAX_OUTPUT_TOKENS='250'; uvicorn app:app --host 127.0.0.1 --port 8000"
 )
 
 echo [3/4] Kiem tra Java Backend (Port 8080)...
