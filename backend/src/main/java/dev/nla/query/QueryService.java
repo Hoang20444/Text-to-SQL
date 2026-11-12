@@ -4,6 +4,7 @@ import dev.nla.ai.AiClient;
 import dev.nla.common.ApiException;
 import dev.nla.common.Errors;
 import dev.nla.common.Json;
+import dev.nla.common.Page;
 import dev.nla.common.Requests;
 import dev.nla.modelprovider.ModelProviderService;
 import dev.nla.registry.CatalogService;
@@ -276,6 +277,51 @@ public class QueryService {
 
   public Map<String, Object> get(String id) {
     return publicQuery(stored(id));
+  }
+
+  public Map<String, Object> result(String id, Map<String, String> p) {
+    var q = stored(id);
+    if (Instant.parse(Json.str(q, "createdAt")).isBefore(Instant.now().minus(Duration.ofHours(24))))
+      throw new ApiException(HttpStatus.GONE, "RESULT_EXPIRED", "Snapshot đã hết hạn lưu trữ.");
+    var full = Json.map(q.get("result"));
+    if (full.isEmpty())
+      throw new ApiException(HttpStatus.CONFLICT, "QUERY_ERROR", "Query không có snapshot.");
+    int page = Page.number(p, "page", 1, 1000000), size = Page.number(p, "pageSize", 20, 100);
+    var rows = Json.objects(full.get("rows"));
+    String search = p.getOrDefault("search", "").toLowerCase(Locale.ROOT);
+    rows =
+        rows.stream()
+            .filter(row -> Json.write(row).toLowerCase(Locale.ROOT).contains(search))
+            .toList();
+    if (p.containsKey("sort") && !p.get("sort").isBlank()) {
+      String sort = p.get("sort");
+      var col =
+          Json.objects(full.get("columns")).stream()
+              .filter(c -> sort.equals(c.get("name")))
+              .findFirst()
+              .orElseThrow(() -> ApiException.bad("Cột sort không hợp lệ."));
+      Comparator<Map<String, Object>> cmp =
+          (a, b) -> {
+            Object x = a.get(sort), y = b.get(sort);
+            if (x == null) return y == null ? 0 : 1;
+            if (y == null) return -1;
+            if (Set.of("INTEGER", "BIGINT", "DECIMAL", "FLOAT").contains(col.get("dataType")))
+              return new java.math.BigDecimal(x.toString())
+                  .compareTo(new java.math.BigDecimal(y.toString()));
+            return x.toString().compareTo(y.toString());
+          };
+      String direction = p.getOrDefault("direction", "ASC");
+      if (!Set.of("ASC", "DESC").contains(direction))
+        throw ApiException.bad("Direction không hợp lệ.");
+      if (direction.equals("DESC")) cmp = cmp.reversed();
+      rows = rows.stream().sorted(cmp).toList();
+    }
+    var result = new LinkedHashMap<>(full);
+    result.put("rows", rows.stream().skip((long) (page - 1) * size).limit(size).toList());
+    result.put("page", page);
+    result.put("pageSize", size);
+    result.put("returnedRowCount", rows.size());
+    return result;
   }
 
   public Map<String, Object> publicQuery(Map<String, Object> stored) {
