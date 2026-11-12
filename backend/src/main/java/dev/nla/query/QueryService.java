@@ -18,8 +18,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 /**
- * Question -> AI candidate SQL -> SQL guard (AST, table/column allowlist, dialect) -> bounded
- * execution -> query history (T-1.3.2, guard and deadline T-2.2.1). Python never executes SQL; Java
+ * Question -> AI candidate SQL -> SQL guard (AST, table/column allowlist,
+ * dialect) -> bounded
+ * execution -> query history (T-1.3.2, guard and deadline T-2.2.1). Python
+ * never executes SQL; Java
  * re-authorizes before using the reader credential.
  */
 @Service
@@ -53,7 +55,8 @@ public class QueryService {
     if (question.codePointCount(0, question.length()) > 1000)
       throw ApiException.bad("Câu hỏi tối đa 1000 ký tự.");
     String mode = Json.str(b, "mode");
-    if (mode.isBlank()) mode = "AUTO";
+    if (mode.isBlank())
+      mode = "AUTO";
     if (!Set.of("AUTO", "API", "DETERMINISTIC").contains(mode))
       throw ApiException.bad("Mode không hợp lệ.");
     if (b.containsKey("providerId")
@@ -81,85 +84,83 @@ public class QueryService {
     String id = Json.id("qry");
     String now = Instant.now().toString();
     long start = System.nanoTime();
-    var q =
-        Json.obj(
-            "queryId",
-            id,
-            "correlationId",
-            Errors.correlation(),
-            "warehouseId",
-            w.get("warehouseId"),
-            "datasetId",
-            d.get("datasetId"),
-            "engine",
-            w.get("engine"),
-            "question",
-            question,
-            "status",
-            "RUNNING",
-            "model",
-            null,
-            "provider",
-            null,
-            "executionMode",
-            mode.equals("DETERMINISTIC") ? "DETERMINISTIC" : "API",
-            "semanticVersion",
-            d.get("semanticVersion"),
-            "schemaVersion",
-            d.get("schemaVersion"),
-            "latencyMs",
-            null,
-            "createdAt",
-            now,
-            "completedAt",
-            null,
-            "candidateSql",
-            null,
-            "generatedSql",
-            null,
-            "sqlDialect",
-            w.get("engine"),
-            "explanation",
-            null,
-            "assumptions",
-            List.of(),
-            "selectedMetrics",
-            List.of(),
-            "selectedDimensions",
-            List.of(),
-            "sourceTables",
-            List.of(),
-            "result",
-            null,
-            "chart",
-            null,
-            "error",
-            null,
-            "owner",
-            store.actor());
+    var q = Json.obj(
+        "queryId",
+        id,
+        "correlationId",
+        Errors.correlation(),
+        "warehouseId",
+        w.get("warehouseId"),
+        "datasetId",
+        d.get("datasetId"),
+        "engine",
+        w.get("engine"),
+        "question",
+        question,
+        "status",
+        "RUNNING",
+        "model",
+        null,
+        "provider",
+        null,
+        "executionMode",
+        mode.equals("DETERMINISTIC") ? "DETERMINISTIC" : "API",
+        "semanticVersion",
+        d.get("semanticVersion"),
+        "schemaVersion",
+        d.get("schemaVersion"),
+        "latencyMs",
+        null,
+        "createdAt",
+        now,
+        "completedAt",
+        null,
+        "candidateSql",
+        null,
+        "generatedSql",
+        null,
+        "sqlDialect",
+        w.get("engine"),
+        "explanation",
+        null,
+        "assumptions",
+        List.of(),
+        "selectedMetrics",
+        List.of(),
+        "selectedDimensions",
+        List.of(),
+        "sourceTables",
+        List.of(),
+        "result",
+        null,
+        "chart",
+        null,
+        "error",
+        null,
+        "owner",
+        store.actor());
     store.putQuery(q);
     QueryDeadline.start();
     try {
       var context = catalog.context(Json.str(d, "datasetId"));
-      var request =
-          Json.obj(
-              "correlationId",
-              Json.str(q, "correlationId"),
-              "warehouseId",
-              w.get("warehouseId"),
-              "datasetId",
-              d.get("datasetId"),
-              "sqlDialect",
-              w.get("engine"),
-              "question",
-              question,
-              "semanticContext",
-              context);
+      var request = Json.obj(
+          "correlationId",
+          Json.str(q, "correlationId"),
+          "warehouseId",
+          w.get("warehouseId"),
+          "datasetId",
+          d.get("datasetId"),
+          "sqlDialect",
+          w.get("engine"),
+          "question",
+          question,
+          "semanticContext",
+          context);
       if (!"DETERMINISTIC".equals(mode)) {
-        // The chosen profile's config (with its decrypted key) goes only to the private AI call;
+        // The chosen profile's config (with its decrypted key) goes only to the private
+        // AI call;
         // history keeps a key-free snapshot of which provider answered.
-        var provider =
-            providerId.isBlank() ? providers.selectDefault() : providers.select(providerId);
+        var provider = providerId.isBlank() ? providers.selectDefault() : providers.select(providerId);
         q.put("provider", provider.snapshot());
         provider.apply(request);
       }
@@ -177,15 +178,15 @@ public class QueryService {
               "SQL_VALIDATION_ERROR",
               "AI chọn metric hoặc dimension ngoài semantic context.");
       }
-      var validated =
-          guard.validate(
-              Json.str(candidate, "sql"),
-              Json.str(w, "engine"),
-              Json.objects(context.get("tables")));
+      var validated = guard.validate(
+          Json.str(candidate, "sql"),
+          Json.str(w, "engine"),
+          Json.objects(context.get("tables")));
       String sql = validated.sql();
       q.put("generatedSql", sql);
       q.put("sourceTables", validated.sourceTables());
-      // The AI call can outlive a grant revocation or registry change: re-check before running.
+      // The AI call can outlive a grant revocation or registry change: re-check
+      // before running.
       var currentWarehouse = store.warehouse(Json.str(w, "warehouseId"));
       var currentDataset = store.dataset(Json.str(d, "datasetId"));
       if (!w.equals(currentWarehouse) || !d.equals(currentDataset))
@@ -195,17 +196,16 @@ public class QueryService {
             "Warehouse hoặc cấu hình dataset đã thay đổi; chạy lại với metadata hiện tại.");
       QueryDeadline.check();
       var limits = Json.map(store.settings().get("limits"));
-      var result =
-          adapters
-              .get(w)
-              .executeReadOnlyQuery(
-                  w,
-                  adapters.password(store.credential(Json.str(w, "warehouseId"))),
-                  sql,
-                  ((Number) limits.get("maxRows")).intValue(),
-                  ((Number) limits.get("maxBytes")).intValue(),
-                  QueryDeadline.seconds(
-                      Math.max(1, ((Number) limits.get("statementTimeoutMs")).intValue() / 1000)));
+      var result = adapters
+          .get(w)
+          .executeReadOnlyQuery(
+              w,
+              adapters.password(store.credential(Json.str(w, "warehouseId"))),
+              sql,
+              ((Number) limits.get("maxRows")).intValue(),
+              ((Number) limits.get("maxBytes")).intValue(),
+              QueryDeadline.seconds(
+                  Math.max(1, ((Number) limits.get("statementTimeoutMs")).intValue() / 1000)));
       QueryDeadline.check();
       q.put("result", result);
       q.put("chart", candidate.get("chartRecommendation"));
@@ -250,23 +250,31 @@ public class QueryService {
     return publicQuery(q);
   }
 
-  /** Query terminal status for an error code, as listed in docs/contracts/errors.md. */
+  /**
+   * Query terminal status for an error code, as listed in
+   * docs/contracts/errors.md.
+   */
   static String terminalStatus(String code) {
     if (code.equals("SQL_SECURITY_ERROR")
         || Set.of("UNSUPPORTED_QUESTION", "INSUFFICIENT_CONTEXT", "LOW_CONFIDENCE").contains(code))
       return "REJECTED";
-    if (code.equals("QUERY_TIMEOUT")) return "TIMEOUT";
+    if (code.equals("QUERY_TIMEOUT"))
+      return "TIMEOUT";
     if (Set.of(
-            "SQL_VALIDATION_ERROR",
-            "SQL_DIALECT_ERROR",
-            "SEMANTIC_MODEL_INVALID",
-            "SCHEMA_MISMATCH",
-            "DATASET_UNAVAILABLE")
-        .contains(code)) return "VALIDATION_ERROR";
+        "SQL_VALIDATION_ERROR",
+        "SQL_DIALECT_ERROR",
+        "SEMANTIC_MODEL_INVALID",
+        "SCHEMA_MISMATCH",
+        "DATASET_UNAVAILABLE")
+        .contains(code))
+      return "VALIDATION_ERROR";
     return "QUERY_ERROR";
   }
 
-  /** A query is visible to its owner, or to ADMIN, while the warehouse is still accessible. */
+  /**
+   * A query is visible to its owner, or to ADMIN, while the warehouse is still
+   * accessible.
+   */
   public Map<String, Object> stored(String id) {
     var q = store.get("query_history", id);
     store.authorize(Json.str(q, "warehouseId"));
@@ -289,31 +297,31 @@ public class QueryService {
     int page = Page.number(p, "page", 1, 1000000), size = Page.number(p, "pageSize", 20, 100);
     var rows = Json.objects(full.get("rows"));
     String search = p.getOrDefault("search", "").toLowerCase(Locale.ROOT);
-    rows =
-        rows.stream()
-            .filter(row -> Json.write(row).toLowerCase(Locale.ROOT).contains(search))
-            .toList();
+    rows = rows.stream()
+        .filter(row -> Json.write(row).toLowerCase(Locale.ROOT).contains(search))
+        .toList();
     if (p.containsKey("sort") && !p.get("sort").isBlank()) {
       String sort = p.get("sort");
-      var col =
-          Json.objects(full.get("columns")).stream()
-              .filter(c -> sort.equals(c.get("name")))
-              .findFirst()
-              .orElseThrow(() -> ApiException.bad("Cột sort không hợp lệ."));
-      Comparator<Map<String, Object>> cmp =
-          (a, b) -> {
-            Object x = a.get(sort), y = b.get(sort);
-            if (x == null) return y == null ? 0 : 1;
-            if (y == null) return -1;
-            if (Set.of("INTEGER", "BIGINT", "DECIMAL", "FLOAT").contains(col.get("dataType")))
-              return new java.math.BigDecimal(x.toString())
-                  .compareTo(new java.math.BigDecimal(y.toString()));
-            return x.toString().compareTo(y.toString());
-          };
+      var col = Json.objects(full.get("columns")).stream()
+          .filter(c -> sort.equals(c.get("name")))
+          .findFirst()
+          .orElseThrow(() -> ApiException.bad("Cột sort không hợp lệ."));
+      Comparator<Map<String, Object>> cmp = (a, b) -> {
+        Object x = a.get(sort), y = b.get(sort);
+        if (x == null)
+          return y == null ? 0 : 1;
+        if (y == null)
+          return -1;
+        if (Set.of("INTEGER", "BIGINT", "DECIMAL", "FLOAT").contains(col.get("dataType")))
+          return new java.math.BigDecimal(x.toString())
+              .compareTo(new java.math.BigDecimal(y.toString()));
+        return x.toString().compareTo(y.toString());
+      };
       String direction = p.getOrDefault("direction", "ASC");
       if (!Set.of("ASC", "DESC").contains(direction))
         throw ApiException.bad("Direction không hợp lệ.");
-      if (direction.equals("DESC")) cmp = cmp.reversed();
+      if (direction.equals("DESC"))
+        cmp = cmp.reversed();
       rows = rows.stream().sorted(cmp).toList();
     }
     var result = new LinkedHashMap<>(full);
@@ -351,21 +359,21 @@ public class QueryService {
         .map(
             q -> {
               var out = new LinkedHashMap<>(q);
-              for (String key :
-                  List.of(
-                      "generatedSql",
-                      "candidateSql",
-                      "result",
-                      "chart",
-                      "error",
-                      "owner",
-                      "assumptions",
-                      "selectedMetrics",
-                      "selectedDimensions",
-                      "sourceTables",
-                      "explanation",
-                      "completedAt",
-                      "sqlDialect")) out.remove(key);
+              for (String key : List.of(
+                  "generatedSql",
+                  "candidateSql",
+                  "result",
+                  "chart",
+                  "error",
+                  "owner",
+                  "assumptions",
+                  "selectedMetrics",
+                  "selectedDimensions",
+                  "sourceTables",
+                  "explanation",
+                  "completedAt",
+                  "sqlDialect"))
+                out.remove(key);
               out.put(
                   "rowCount",
                   q.get("result") == null
