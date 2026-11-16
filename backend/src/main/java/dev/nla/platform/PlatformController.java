@@ -214,8 +214,7 @@ public class PlatformController {
       throw ApiException.bad("Timezone không hợp lệ.");
     }
     var limits = Json.map(b.get("limits"));
-    Requests.fields(
-        limits, Set.of("maxRows", "maxBytes", "statementTimeoutMs", "queryDeadlineMs"));
+    Requests.fields(limits, Set.of("maxRows", "maxBytes", "statementTimeoutMs", "queryDeadlineMs"));
     for (var limit :
         Map.of(
                 "maxRows",
