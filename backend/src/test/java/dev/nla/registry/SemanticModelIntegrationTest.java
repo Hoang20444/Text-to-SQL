@@ -246,6 +246,19 @@ class SemanticModelIntegrationTest {
   }
 
   @Test
+  void duplicateNamesAreRejected() throws Exception {
+    var model = modelWithRevenue("1.0.0", "SUM(total)");
+    var copy = new LinkedHashMap<>(Json.objects(model.get("metrics")).getFirst());
+    copy.put("name", "Revenue");
+    model.put("metrics", List.of(Json.objects(model.get("metrics")).getFirst(), copy));
+
+    as(TestJwt.admin(), put(url()), model)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.code").value("SEMANTIC_MODEL_INVALID"))
+        .andExpect(jsonPath("$.error.details.path").value("metrics[1].name"));
+  }
+
+  @Test
   void invalidRequestsAreRejected() throws Exception {
     var badVersion = modelWithRevenue("v1", "SUM(total)");
     as(TestJwt.admin(), put(url()), badVersion).andExpect(status().isBadRequest());

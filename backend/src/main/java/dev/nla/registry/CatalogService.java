@@ -179,6 +179,7 @@ public class CatalogService {
       }
     }
     var dimensions = Json.objects(sem.get("dimensions"));
+    uniqueNames(Json.objects(sem.get("metrics")), dimensions);
     for (int i = 0; i < dimensions.size(); i++) {
       var d = dimensions.get(i);
       if (!fields
@@ -206,6 +207,25 @@ public class CatalogService {
         net.sf.jsqlparser.parser.CCJSqlParserUtil.parseExpression(Json.str(m, "expression"));
       } catch (Exception e) {
         throw invalid("Biểu thức của metric '" + name + "' không hợp lệ.", path + ".expression");
+      }
+    }
+  }
+
+  /**
+   * Queries and AI answers select metrics and dimensions by name, so every name must be present and
+   * identify exactly one definition (case-insensitive, shared by metrics and dimensions).
+   */
+  private static void uniqueNames(
+      List<Map<String, Object>> metrics, List<Map<String, Object>> dimensions) {
+    Set<String> seen = new HashSet<>();
+    for (String kind : List.of("metrics", "dimensions")) {
+      var items = kind.equals("metrics") ? metrics : dimensions;
+      for (int i = 0; i < items.size(); i++) {
+        String name = Json.str(items.get(i), "name").trim();
+        String path = kind + "[" + i + "].name";
+        if (name.isEmpty()) throw invalid("Tên định nghĩa không được để trống.", path);
+        if (!seen.add(name.toLowerCase(Locale.ROOT)))
+          throw invalid("Tên '" + name + "' bị trùng với định nghĩa khác.", path);
       }
     }
   }
