@@ -45,15 +45,15 @@ ai-service/.venv/Scripts/python data/scripts/verify_sprint2_ai.py
 
 ### CI trên GitHub Actions
 
-File `.github/workflows/ci.yml` chạy mỗi khi push bất kỳ nhánh nào và khi mở PR vào `main`/`develop`. Mỗi phần chỉ chạy khi thư mục của nó thay đổi (phần không đổi hiện "skipped"):
+File `.github/workflows/ci.yml` chạy khi mở hoặc cập nhật PR vào `main`/`develop` (hoặc bấm chạy tay ở tab Actions). Push lên nhánh thường không chạy CI. Mỗi lần chạy kiểm tra đủ cả 3 phần:
 
-| Job | Chạy khi đổi | Kiểm tra |
+| Job | Thư mục | Kiểm tra |
 |---|---|---|
 | Backend | `backend/` | Google Java Format, `mvn test` (Testcontainers PostgreSQL/MySQL/SQL Server) |
 | Frontend | `frontend/` | Prettier, `npm run build` (gồm kiểm tra TypeScript), `npm test` |
 | AI service | `ai-service/`, `data/scripts/`, `infra/local/` | Black, isort, `pytest ai-service infra/local/test_llm_profile.py` |
 
-Format trước khi push để CI không báo lỗi:
+Format trước khi mở PR để CI không báo lỗi:
 
 ```bash
 cd backend && mvn com.spotify.fmt:fmt-maven-plugin:2.25:format
