@@ -156,6 +156,70 @@ public class QueryService {
     return finish(q, start);
   }
 
+  /**
+   * Structured semantic query (T-3.1.2, AC3): the user picks metric and dimension names, the
+   * compiler builds SQL from the validated model, and no LLM is called. The SQL still passes the
+   * same AST guard and bounded read-only execution as AI candidates, and is stored in history.
+   */
+  public Map<String, Object> runSemantic(String datasetId, Map<String, Object> b) {
+    Requests.fields(b, Set.of("metrics", "dimensions", "limit"));
+    var metrics = names(b.get("metrics"), "metrics", 1, 10);
+    var dimensions = names(b.get("dimensions"), "dimensions", 0, 5);
+    int limit = 1000;
+    if (b.containsKey("limit")) {
+      if (!(b.get("limit") instanceof Integer value) || value < 1 || value > 1000)
+        throw ApiException.bad("limit phải là số nguyên từ 1 đến 1000.");
+      limit = value;
+    }
+    var d = store.dataset(datasetId);
+    var w = store.warehouse(Json.str(d, "warehouseId"));
+    if (!Json.str(w, "status").equals("ACTIVE") || !Json.str(d, "status").equals("ACTIVE"))
+      throw new ApiException(
+          HttpStatus.CONFLICT, "DATASET_UNAVAILABLE", "Warehouse hoặc dataset không hoạt động.");
+    String question =
+        "Chỉ số: "
+            + String.join(", ", metrics)
+            + (dimensions.isEmpty() ? "" : " | Chiều: " + String.join(", ", dimensions));
+    long start = System.nanoTime();
+    var q = newQuery(w, d, question, "SEMANTIC");
+    q.put("model", "semantic-compiler");
+    store.putQuery(q);
+    QueryDeadline.start();
+    try {
+      var context = catalog.context(datasetId);
+      var compiled =
+          new SemanticCompiler(adapters.get(w)::quoteIdentifier)
+              .compile(context, metrics, dimensions);
+      q.put("candidateSql", compiled.sql());
+      var validated =
+          guard.validate(
+              compiled.sql(), Json.str(w, "engine"), Json.objects(context.get("tables")));
+      q.put("generatedSql", validated.sql());
+      q.put("sourceTables", validated.sourceTables());
+      q.put("selectedMetrics", compiled.metrics());
+      q.put("selectedDimensions", compiled.dimensions());
+      QueryDeadline.check();
+      q.put("result", runReadOnly(w, validated.sql(), limit));
+      QueryDeadline.check();
+      q.put("status", "SUCCESS");
+    } catch (Exception e) {
+      recordFailure(q, w, e);
+    } finally {
+      QueryDeadline.clear();
+    }
+    return finish(q, start);
+  }
+
+  private static List<String> names(Object value, String field, int min, int max) {
+    if (value == null && min == 0) return List.of();
+    if (!(value instanceof List<?> list)
+        || list.size() < min
+        || list.size() > max
+        || list.stream().anyMatch(x -> !(x instanceof String s) || s.isBlank() || s.length() > 200))
+      throw ApiException.bad(field + " phải là danh sách từ " + min + " đến " + max + " tên.");
+    return list.stream().map(String.class::cast).toList();
+  }
+
   /** A RUNNING query record; history, result and export read the same shape for every mode. */
   private Map<String, Object> newQuery(
       Map<String, Object> w, Map<String, Object> d, String question, String executionMode) {
