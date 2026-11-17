@@ -241,7 +241,8 @@ class SemanticModelIntegrationTest {
 
     as(TestJwt.admin(), put(url()), model)
         .andExpect(status().isConflict())
-        .andExpect(jsonPath("$.error.code").value("SEMANTIC_MODEL_INVALID"));
+        .andExpect(jsonPath("$.error.code").value("SEMANTIC_MODEL_INVALID"))
+        .andExpect(jsonPath("$.error.details.path").value("dimensions[0].column"));
   }
 
   @Test

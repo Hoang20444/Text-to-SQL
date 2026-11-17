@@ -161,45 +161,62 @@ public class CatalogService {
       fields.put(key(t), columns);
     }
     Set<String> endpoints = new HashSet<>();
-    for (var relation : Json.objects(sem.get("relationships"))) {
+    var relationships = Json.objects(sem.get("relationships"));
+    for (int i = 0; i < relationships.size(); i++) {
+      var relation = relationships.get(i);
+      String path = "relationships[" + i + "]";
       if (!endpoints.add(relationIdentity(relation)))
-        throw new ApiException(
-            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Join bị khai báo lặp hoặc mâu thuẫn.");
+        throw invalid("Join bị khai báo lặp hoặc mâu thuẫn.", path);
       if (!Set.of("ONE_TO_ONE", "MANY_TO_ONE", "ONE_TO_MANY", "MANY_TO_MANY")
           .contains(Json.str(relation, "cardinality")))
-        throw ApiException.bad("Cardinality không hợp lệ.");
+        throw ApiException.bad("Cardinality không hợp lệ ở " + path + ".cardinality.");
       for (String side : List.of("from", "to")) {
         var endpoint = Json.map(relation.get(side));
         if (!fields
             .getOrDefault(key(Json.map(endpoint.get("table"))), Set.of())
             .contains(Json.str(endpoint, "column")))
-          throw new ApiException(
-              HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Join tham chiếu cột ngoài dataset.");
+          throw invalid("Join tham chiếu cột ngoài dataset.", path + "." + side + ".column");
       }
     }
-    for (var d : Json.objects(sem.get("dimensions")))
+    var dimensions = Json.objects(sem.get("dimensions"));
+    for (int i = 0; i < dimensions.size(); i++) {
+      var d = dimensions.get(i);
       if (!fields
           .getOrDefault(key(Json.map(d.get("table"))), Set.of())
           .contains(Json.str(d, "column")))
-        throw new ApiException(
-            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Dimension không khớp metadata vật lý.");
+        throw invalid(
+            "Dimension '" + Json.str(d, "name") + "' không khớp metadata vật lý.",
+            "dimensions[" + i + "].column");
+    }
     Set<String> dimensionNames = new HashSet<>();
-    Json.objects(sem.get("dimensions")).forEach(d -> dimensionNames.add(Json.str(d, "name")));
-    for (var m : Json.objects(sem.get("metrics"))) {
+    dimensions.forEach(d -> dimensionNames.add(Json.str(d, "name")));
+    var metrics = Json.objects(sem.get("metrics"));
+    for (int i = 0; i < metrics.size(); i++) {
+      var m = metrics.get(i);
+      String path = "metrics[" + i + "]";
+      String name = Json.str(m, "name");
       if (Json.objects(m.get("tableRefs")).stream().anyMatch(t -> !fields.containsKey(key(t))))
-        throw new ApiException(
-            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Metric tham chiếu bảng ngoài dataset.");
-      Object dimensions = m.get("compatibleDimensions");
-      if (!(dimensions instanceof List<?> names) || !dimensionNames.containsAll(names))
-        throw new ApiException(
-            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Compatible dimensions không hợp lệ.");
+        throw invalid("Metric '" + name + "' tham chiếu bảng ngoài dataset.", path + ".tableRefs");
+      Object compatible = m.get("compatibleDimensions");
+      if (!(compatible instanceof List<?> names) || !dimensionNames.containsAll(names))
+        throw invalid(
+            "Metric '" + name + "' có compatibleDimensions không hợp lệ.",
+            path + ".compatibleDimensions");
       try {
         net.sf.jsqlparser.parser.CCJSqlParserUtil.parseExpression(Json.str(m, "expression"));
       } catch (Exception e) {
-        throw new ApiException(
-            HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", "Biểu thức metric không hợp lệ.");
+        throw invalid("Biểu thức của metric '" + name + "' không hợp lệ.", path + ".expression");
       }
     }
+  }
+
+  /**
+   * SEMANTIC_MODEL_INVALID with details.path pointing at the wrong field, e.g.
+   * metrics[0].expression.
+   */
+  private static ApiException invalid(String message, String path) {
+    return new ApiException(
+        HttpStatus.CONFLICT, "SEMANTIC_MODEL_INVALID", message, Json.obj("path", path));
   }
 
   /**
