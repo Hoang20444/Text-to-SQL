@@ -202,6 +202,21 @@ public class CatalogService {
     }
   }
 
+  /**
+   * Keeps only declared joins: GET returns discovered foreign keys together with declarations, so a
+   * client that sends the model back must not turn physical keys into stored declarations.
+   */
+  public List<Map<String, Object>> declaredRelationships(
+      List<Map<String, Object>> tables, List<Map<String, Object>> relationships) {
+    Set<String> discovered = new HashSet<>();
+    tables.stream()
+        .flatMap(t -> Json.objects(t.get("foreignKeys")).stream())
+        .forEach(rel -> discovered.add(relationIdentity(rel)));
+    return relationships.stream()
+        .filter(rel -> !discovered.contains(relationIdentity(rel)))
+        .toList();
+  }
+
   private static String relationIdentity(Map<String, Object> relation) {
     var from = Json.map(relation.get("from"));
     var to = Json.map(relation.get("to"));
