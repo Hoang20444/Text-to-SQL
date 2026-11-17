@@ -2,6 +2,8 @@ package dev.nla.query;
 
 import dev.nla.common.ApiException;
 import dev.nla.common.Json;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -34,23 +36,50 @@ public final class SemanticCompiler {
   /** Compiled statement plus the names it selected, in output column order. */
   public record Compiled(String sql, List<String> metrics, List<String> dimensions) {}
 
+  private final String engine;
   private final UnaryOperator<String> quote;
 
   /** quote is the warehouse dialect's identifier quoting, e.g. "x", `x` or [x]. */
-  public SemanticCompiler(UnaryOperator<String> quote) {
+  public SemanticCompiler(String engine, UnaryOperator<String> quote) {
+    this.engine = engine;
     this.quote = quote;
   }
 
   public Compiled compile(
       Map<String, Object> context, List<String> metricNames, List<String> dimensionNames) {
+    return compile(context, metricNames, dimensionNames, List.of());
+  }
+
+  /**
+   * filters are {dimension, operator, value}; the value is written as an escaped literal for the
+   * dialect, never as SQL text from the request.
+   */
+  public Compiled compile(
+      Map<String, Object> context,
+      List<String> metricNames,
+      List<String> dimensionNames,
+      List<Map<String, Object>> filters) {
     var metrics = byName(Json.objects(context.get("metrics")), metricNames, "Metric");
     var dimensions = byName(Json.objects(context.get("dimensions")), dimensionNames, "Dimension");
+    // One definition per filter, in order; two filters may use the same dimension (a range).
+    var filterDimensions =
+        filters.stream()
+            .map(
+                f ->
+                    byName(
+                            Json.objects(context.get("dimensions")),
+                            List.of(Json.str(f, "dimension")),
+                            "Dimension")
+                        .getFirst())
+            .toList();
+    var used = new ArrayList<>(dimensions);
+    filterDimensions.stream().filter(f -> !used.contains(f)).forEach(used::add);
 
     String base = baseTable(metrics);
     for (var metric : metrics) {
       var compatible =
           metric.get("compatibleDimensions") instanceof List<?> list ? list : List.of();
-      for (var dimension : dimensions)
+      for (var dimension : used)
         if (!compatible.contains(dimension.get("name")))
           throw rejected(
               "Dimension '"
@@ -63,7 +92,7 @@ public final class SemanticCompiler {
     // Join path from the base table to each dimension table, many-to-one edges only.
     var edges = safeEdges(Json.objects(context.get("relationships")));
     var joins = new LinkedHashMap<String, String>();
-    for (var dimension : dimensions) {
+    for (var dimension : used) {
       String target = key(Json.map(dimension.get("table")));
       if (target.equals(base)) continue;
       var path = path(base, target, edges);
@@ -87,13 +116,13 @@ public final class SemanticCompiler {
     List<String> select = new ArrayList<>();
     List<String> groupBy = new ArrayList<>();
     for (var dimension : dimensions) {
-      String column =
-          quote.apply(aliases.get(key(Json.map(dimension.get("table")))))
-              + "."
-              + quote.apply(Json.str(dimension, "column"));
+      String column = column(dimension, aliases);
       select.add(column + " AS " + quote.apply(Json.str(dimension, "name")));
       groupBy.add(column);
     }
+    List<String> where = new ArrayList<>();
+    for (int i = 0; i < filters.size(); i++)
+      where.add(predicate(column(filterDimensions.get(i), aliases), filters.get(i)));
     for (var metric : metrics)
       select.add(
           "(" + Json.str(metric, "expression") + ") AS " + quote.apply(Json.str(metric, "name")));
@@ -105,6 +134,7 @@ public final class SemanticCompiler {
           .append(table(join.getKey(), aliases))
           .append(" ON ")
           .append(condition(join.getValue(), aliases));
+    if (!where.isEmpty()) sql.append(" WHERE ").append(String.join(" AND ", where));
     if (!groupBy.isEmpty()) {
       sql.append(" GROUP BY ").append(String.join(", ", groupBy));
       // Stable order so the same query gives the same rows on every engine.
@@ -114,6 +144,62 @@ public final class SemanticCompiler {
         sql.toString(),
         metrics.stream().map(m -> Json.str(m, "name")).toList(),
         dimensions.stream().map(d -> Json.str(d, "name")).toList());
+  }
+
+  private String column(Map<String, Object> dimension, Map<String, String> aliases) {
+    return quote.apply(aliases.get(key(Json.map(dimension.get("table")))))
+        + "."
+        + quote.apply(Json.str(dimension, "column"));
+  }
+
+  private String predicate(String column, Map<String, Object> filter) {
+    String operator = Json.str(filter, "operator");
+    if (operator.equals("IS_NULL")) return column + " IS NULL";
+    if (operator.equals("IS_NOT_NULL")) return column + " IS NOT NULL";
+    Object value = filter.get("value");
+    if (operator.equals("CONTAINS")) {
+      if (!(value instanceof String text))
+        throw ApiException.bad("CONTAINS cần giá trị dạng chuỗi.");
+      // '!' escapes LIKE wildcards the same way on all three engines ('[' is one on SQL Server).
+      String pattern =
+          "%"
+              + text.replace("!", "!!").replace("%", "!%").replace("_", "!_").replace("[", "![")
+              + "%";
+      return column + " LIKE " + string(pattern) + " ESCAPE '!'";
+    }
+    String symbol =
+        switch (operator) {
+          case "EQ" -> "=";
+          case "NE" -> "<>";
+          case "GT" -> ">";
+          case "GTE" -> ">=";
+          case "LT" -> "<";
+          case "LTE" -> "<=";
+          default -> throw ApiException.bad("Toán tử lọc không hợp lệ: " + operator);
+        };
+    return column + " " + symbol + " " + literal(value);
+  }
+
+  private String literal(Object value) {
+    if (value instanceof String text) return string(text);
+    if (value instanceof Boolean flag)
+      return engine.equals("SQL_SERVER") ? (flag ? "1" : "0") : flag.toString().toUpperCase();
+    if (value instanceof Integer || value instanceof Long || value instanceof BigInteger)
+      return value.toString();
+    if (value instanceof Number number) {
+      double asDouble = number.doubleValue();
+      if (Double.isNaN(asDouble) || Double.isInfinite(asDouble))
+        throw ApiException.bad("Giá trị lọc không hợp lệ.");
+      return new BigDecimal(number.toString()).toPlainString();
+    }
+    throw ApiException.bad("Giá trị lọc phải là chuỗi, số hoặc true/false.");
+  }
+
+  /** Quoted string literal: doubled quotes; MySQL also treats backslash as an escape. */
+  private String string(String text) {
+    String escaped = text.replace("'", "''");
+    if (engine.equals("MYSQL")) escaped = escaped.replace("\\", "\\\\");
+    return (engine.equals("SQL_SERVER") ? "N'" : "'") + escaped + "'";
   }
 
   private static List<Map<String, Object>> byName(

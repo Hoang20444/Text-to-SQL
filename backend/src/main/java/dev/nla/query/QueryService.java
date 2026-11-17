@@ -162,9 +162,10 @@ public class QueryService {
    * same AST guard and bounded read-only execution as AI candidates, and is stored in history.
    */
   public Map<String, Object> runSemantic(String datasetId, Map<String, Object> b) {
-    Requests.fields(b, Set.of("metrics", "dimensions", "limit"));
+    Requests.fields(b, Set.of("metrics", "dimensions", "filters", "limit"));
     var metrics = names(b.get("metrics"), "metrics", 1, 10);
     var dimensions = names(b.get("dimensions"), "dimensions", 0, 5);
+    var filters = filters(b.get("filters"));
     int limit = 1000;
     if (b.containsKey("limit")) {
       if (!(b.get("limit") instanceof Integer value) || value < 1 || value > 1000)
@@ -176,24 +177,26 @@ public class QueryService {
     if (!Json.str(w, "status").equals("ACTIVE") || !Json.str(d, "status").equals("ACTIVE"))
       throw new ApiException(
           HttpStatus.CONFLICT, "DATASET_UNAVAILABLE", "Warehouse hoặc dataset không hoạt động.");
+    // Selection errors (unknown name, incompatible dimension, unsafe join) are request errors:
+    // they are returned directly and do not create a history entry.
+    var context = catalog.context(datasetId);
+    String engine = Json.str(w, "engine");
+    var compiled =
+        new SemanticCompiler(engine, adapters.get(w)::quoteIdentifier)
+            .compile(context, metrics, dimensions, filters);
     String question =
         "Chỉ số: "
             + String.join(", ", metrics)
-            + (dimensions.isEmpty() ? "" : " | Chiều: " + String.join(", ", dimensions));
+            + (dimensions.isEmpty() ? "" : " | Chiều: " + String.join(", ", dimensions))
+            + (filters.isEmpty() ? "" : " | Lọc: " + filters.size() + " điều kiện");
     long start = System.nanoTime();
     var q = newQuery(w, d, question, "SEMANTIC");
     q.put("model", "semantic-compiler");
     store.putQuery(q);
     QueryDeadline.start();
     try {
-      var context = catalog.context(datasetId);
-      var compiled =
-          new SemanticCompiler(adapters.get(w)::quoteIdentifier)
-              .compile(context, metrics, dimensions);
       q.put("candidateSql", compiled.sql());
-      var validated =
-          guard.validate(
-              compiled.sql(), Json.str(w, "engine"), Json.objects(context.get("tables")));
+      var validated = guard.validate(compiled.sql(), engine, Json.objects(context.get("tables")));
       q.put("generatedSql", validated.sql());
       q.put("sourceTables", validated.sourceTables());
       q.put("selectedMetrics", compiled.metrics());
@@ -208,6 +211,36 @@ public class QueryService {
       QueryDeadline.clear();
     }
     return finish(q, start);
+  }
+
+  private static final Set<String> FILTER_OPERATORS =
+      Set.of("EQ", "NE", "GT", "GTE", "LT", "LTE", "CONTAINS", "IS_NULL", "IS_NOT_NULL");
+
+  /** Up to 10 {dimension, operator, value?}; values are literals, never SQL. */
+  private static List<Map<String, Object>> filters(Object value) {
+    if (value == null) return List.of();
+    if (!(value instanceof List<?> list) || list.size() > 10)
+      throw ApiException.bad("filters phải là danh sách tối đa 10 điều kiện.");
+    List<Map<String, Object>> result = new ArrayList<>();
+    for (Object item : list) {
+      if (!(item instanceof Map<?, ?>)) throw ApiException.bad("Điều kiện lọc không hợp lệ.");
+      var filter = Json.map(item);
+      Requests.fields(filter, Set.of("dimension", "operator", "value"));
+      Requests.required(filter, "dimension", "operator");
+      String operator = Json.str(filter, "operator");
+      if (!FILTER_OPERATORS.contains(operator))
+        throw ApiException.bad("Toán tử lọc không hợp lệ: " + operator);
+      boolean needsValue = !operator.startsWith("IS_");
+      if (needsValue == (filter.get("value") == null))
+        throw ApiException.bad(
+            needsValue
+                ? "Toán tử " + operator + " cần value."
+                : "IS_NULL/IS_NOT_NULL không nhận value.");
+      if (filter.get("value") instanceof String text && text.length() > 500)
+        throw ApiException.bad("Giá trị lọc tối đa 500 ký tự.");
+      result.add(filter);
+    }
+    return result;
   }
 
   private static List<String> names(Object value, String field, int min, int max) {

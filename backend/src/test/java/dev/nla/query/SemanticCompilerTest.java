@@ -76,7 +76,7 @@ class SemanticCompilerTest {
   @Test
   void revenueByCountryJoinsCustomerOnPostgreSql() {
     var compiled =
-        new SemanticCompiler(new PostgreSqlDialect()::quoteIdentifier)
+        new SemanticCompiler("POSTGRESQL", new PostgreSqlDialect()::quoteIdentifier)
             .compile(context(), List.of("revenue"), List.of("country"));
 
     assertThat(compiled.sql())
@@ -93,10 +93,10 @@ class SemanticCompilerTest {
   @Test
   void quotingFollowsMySqlAndSqlServer() {
     var mysql =
-        new SemanticCompiler(new MySqlDialect()::quoteIdentifier)
+        new SemanticCompiler("MYSQL", new MySqlDialect()::quoteIdentifier)
             .compile(context(), List.of("revenue"), List.of("country"));
     var sqlServer =
-        new SemanticCompiler(new SqlServerDialect()::quoteIdentifier)
+        new SemanticCompiler("SQL_SERVER", new SqlServerDialect()::quoteIdentifier)
             .compile(context(), List.of("revenue"), List.of("country"));
 
     assertThat(mysql.sql()).contains("FROM `shop`.`orders` `orders` JOIN `shop`.`customer`");
@@ -106,7 +106,7 @@ class SemanticCompilerTest {
   @Test
   void dimensionOnTheBaseTableNeedsNoJoin() {
     var compiled =
-        new SemanticCompiler(new PostgreSqlDialect()::quoteIdentifier)
+        new SemanticCompiler("POSTGRESQL", new PostgreSqlDialect()::quoteIdentifier)
             .compile(context(), List.of("revenue"), List.of("status"));
 
     assertThat(compiled.sql()).doesNotContain("JOIN").contains("GROUP BY \"orders\".\"status\"");
@@ -115,7 +115,7 @@ class SemanticCompilerTest {
   @Test
   void metricsWithoutDimensionsHaveNoGroupBy() {
     var compiled =
-        new SemanticCompiler(new PostgreSqlDialect()::quoteIdentifier)
+        new SemanticCompiler("POSTGRESQL", new PostgreSqlDialect()::quoteIdentifier)
             .compile(context(), List.of("revenue", "order_count"), List.of());
 
     assertThat(compiled.sql())
@@ -127,7 +127,7 @@ class SemanticCompilerTest {
   @Test
   void joiningTowardsTheManySideIsRejected() {
     // revenue lives on orders; product lives on line_item (one order has many items).
-    var compiler = new SemanticCompiler(new PostgreSqlDialect()::quoteIdentifier);
+    var compiler = new SemanticCompiler("POSTGRESQL", new PostgreSqlDialect()::quoteIdentifier);
     var withProduct = context();
     var metrics = Json.objects(withProduct.get("metrics"));
     var revenue = new java.util.LinkedHashMap<>(metrics.getFirst());
@@ -142,7 +142,7 @@ class SemanticCompilerTest {
   @Test
   void manySideMetricCanUseOneSideDimensionThroughTwoJoins() {
     var compiled =
-        new SemanticCompiler(new PostgreSqlDialect()::quoteIdentifier)
+        new SemanticCompiler("POSTGRESQL", new PostgreSqlDialect()::quoteIdentifier)
             .compile(context(), List.of("items_sold"), List.of("country"));
 
     assertThat(compiled.sql())
@@ -153,7 +153,7 @@ class SemanticCompilerTest {
 
   @Test
   void incompatibleOrUnknownSelectionsAreRejected() {
-    var compiler = new SemanticCompiler(new PostgreSqlDialect()::quoteIdentifier);
+    var compiler = new SemanticCompiler("POSTGRESQL", new PostgreSqlDialect()::quoteIdentifier);
 
     assertThatThrownBy(() -> compiler.compile(context(), List.of("order_count"), List.of("status")))
         .isInstanceOf(ApiException.class)
@@ -165,5 +165,77 @@ class SemanticCompilerTest {
             () -> compiler.compile(context(), List.of("revenue", "items_sold"), List.of()))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("bảng gốc khác nhau");
+  }
+
+  @Test
+  void filtersBecomeEscapedLiterals() {
+    var filters =
+        List.<Map<String, Object>>of(
+            Json.obj("dimension", "country", "operator", "EQ", "value", "Viet'Nam"),
+            Json.obj("dimension", "status", "operator", "NE", "value", "x' OR '1'='1"));
+
+    var postgres =
+        new SemanticCompiler("POSTGRESQL", new PostgreSqlDialect()::quoteIdentifier)
+            .compile(context(), List.of("revenue"), List.of("country"), filters);
+    var sqlServer =
+        new SemanticCompiler("SQL_SERVER", new SqlServerDialect()::quoteIdentifier)
+            .compile(context(), List.of("revenue"), List.of("country"), filters);
+
+    assertThat(postgres.sql())
+        .contains(
+            " WHERE \"customer\".\"country\" = 'Viet''Nam'"
+                + " AND \"orders\".\"status\" <> 'x'' OR ''1''=''1'"
+                + " GROUP BY");
+    assertThat(sqlServer.sql()).contains("[customer].[country] = N'Viet''Nam'");
+  }
+
+  @Test
+  void mysqlEscapesBackslashAndContainsEscapesWildcards() {
+    var filters =
+        List.<Map<String, Object>>of(
+            Json.obj("dimension", "country", "operator", "CONTAINS", "value", "50%_off\\"),
+            Json.obj("dimension", "status", "operator", "IS_NOT_NULL"));
+
+    var mysql =
+        new SemanticCompiler("MYSQL", new MySqlDialect()::quoteIdentifier)
+            .compile(context(), List.of("revenue"), List.of(), filters);
+
+    assertThat(mysql.sql())
+        .contains("`customer`.`country` LIKE '%50!%!_off\\\\%' ESCAPE '!'")
+        .contains("`orders`.`status` IS NOT NULL")
+        // Filtering on a dimension still joins its table, even when it is not selected.
+        .contains("JOIN `shop`.`customer` `customer`")
+        .doesNotContain("GROUP BY");
+  }
+
+  @Test
+  void numbersAndBooleansAreFormattedPerDialect() {
+    var filters =
+        List.<Map<String, Object>>of(
+            Json.obj("dimension", "status", "operator", "GTE", "value", 2.5),
+            Json.obj("dimension", "status", "operator", "LT", "value", true));
+
+    var postgres =
+        new SemanticCompiler("POSTGRESQL", new PostgreSqlDialect()::quoteIdentifier)
+            .compile(context(), List.of("revenue"), List.of(), filters);
+    var sqlServer =
+        new SemanticCompiler("SQL_SERVER", new SqlServerDialect()::quoteIdentifier)
+            .compile(context(), List.of("revenue"), List.of(), filters);
+
+    assertThat(postgres.sql()).contains(">= 2.5").contains("< TRUE");
+    assertThat(sqlServer.sql()).contains(">= 2.5").contains("< 1");
+  }
+
+  @Test
+  void filterOnIncompatibleDimensionIsRejected() {
+    var compiler = new SemanticCompiler("POSTGRESQL", new PostgreSqlDialect()::quoteIdentifier);
+    var filters =
+        List.<Map<String, Object>>of(
+            Json.obj("dimension", "status", "operator", "EQ", "value", "PAID"));
+
+    assertThatThrownBy(
+            () -> compiler.compile(context(), List.of("order_count"), List.of(), filters))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("không tương thích");
   }
 }
