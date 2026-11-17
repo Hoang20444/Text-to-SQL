@@ -1,56 +1,24 @@
 # Continuous integration for backend (Java), frontend (React) and AI service (Python).
-# Runs on every pushed branch and on PRs into main/develop. A first "changes" job looks at
-# which folders changed, and each part only runs when its own folder (or this file) changed;
-# the others show as "skipped", which GitHub treats as passing.
+# Like the HanGo setup: runs only on pull requests into main/develop (and by hand), and every
+# run checks all three parts so nothing is merged without a full build and test.
 name: CI
 
 on:
-  push:
-    branches: ["**"]
   pull_request:
     branches: [main, develop]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: read # lets the change filter list the files of a pull request
 
-# A newer push to the same branch/PR cancels the older run.
+# A newer push to the same pull request cancels the older run.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Detect changed parts
-    runs-on: ubuntu-latest
-    outputs:
-      backend: ${{ steps.filter.outputs.backend }}
-      frontend: ${{ steps.filter.outputs.frontend }}
-      ai: ${{ steps.filter.outputs.ai }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4
-        id: filter
-        with:
-          filters: |
-            backend:
-              - 'backend/**'
-              - '.github/workflows/ci.yml'
-            frontend:
-              - 'frontend/**'
-              - '.github/workflows/ci.yml'
-            ai:
-              - 'ai-service/**'
-              - 'data/scripts/**'
-              - 'infra/local/**'
-              - 'pyproject.toml'
-              - '.github/workflows/ci.yml'
-
   backend:
     name: Backend (Java 21, Maven)
-    needs: changes
-    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -85,8 +53,6 @@ jobs:
 
   frontend:
     name: Frontend (Node 22, React)
-    needs: changes
-    if: needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -117,8 +83,6 @@ jobs:
 
   ai:
     name: AI service (Python 3.12)
-    needs: changes
-    if: needs.changes.outputs.ai == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
