@@ -1,0 +1,145 @@
+# Continuous integration for backend (Java), frontend (React) and AI service (Python).
+# Runs on every pushed branch and on PRs into main/develop. A first "changes" job looks at
+# which folders changed, and each part only runs when its own folder (or this file) changed;
+# the others show as "skipped", which GitHub treats as passing.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read # lets the change filter list the files of a pull request
+
+# A newer push to the same branch/PR cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changed parts
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      ai: ${{ steps.filter.outputs.ai }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/ci.yml'
+            ai:
+              - 'ai-service/**'
+              - 'data/scripts/**'
+              - 'infra/local/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+
+  backend:
+    name: Backend (Java 21, Maven)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      # Same formatter as docs/code-style.md; fails if a file is not Google Java Format.
+      - name: Check formatting
+        run: mvn -B -ntp com.spotify.fmt:fmt-maven-plugin:2.25:check
+
+      # Integration tests start PostgreSQL, MySQL and SQL Server with Testcontainers
+      # (Docker is available on GitHub-hosted Ubuntu runners). No secrets are needed:
+      # tests sign their own JWTs and use throwaway database containers.
+      - name: Test
+        run: mvn -B -ntp test
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-reports
+          path: backend/target/surefire-reports/
+          retention-days: 7
+
+  frontend:
+    name: Frontend (Node 22, React)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      # Prettier, as in docs/code-style.md.
+      - name: Check formatting
+        run: npm run format:check
+
+      # Type check (tsc -b) and production build.
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  ai:
+    name: AI service (Python 3.12)
+    needs: changes
+    if: needs.changes.outputs.ai == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ai-service/requirements-dev.txt
+
+      # requirements-dev.txt includes requirements.txt plus Black and isort.
+      - name: Install
+        run: python -m pip install -r ai-service/requirements-dev.txt
+
+      # Black and isort settings come from pyproject.toml (line length 100).
+      - name: Check formatting
+        run: |
+          python -m black --check .
+          python -m isort --check-only ai-service data/scripts
+
+      # Tests use mocked model providers; no Ollama, API key or network is needed.
+      - name: Test
+        run: python -m pytest -q ai-service infra/local/test_llm_profile.py
