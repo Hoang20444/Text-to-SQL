@@ -26,6 +26,14 @@ public class QueryController {
     return ResponseEntity.status(201).body(queries.run(b));
   }
 
+  /** Structured metric + dimension query compiled without an LLM (T-3.1.2). */
+  @PostMapping("/datasets/{datasetId}/semantic-query")
+  @PreAuthorize("hasAnyRole('ANALYST','ADMIN')")
+  ResponseEntity<?> semanticQuery(
+      @PathVariable String datasetId, @RequestBody Map<String, Object> b) {
+    return ResponseEntity.status(201).body(queries.runSemantic(datasetId, b));
+  }
+
   @GetMapping("/query/history")
   Object history(@RequestParam Map<String, String> p) {
     return Page.of(

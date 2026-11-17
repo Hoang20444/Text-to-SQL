@@ -78,65 +78,8 @@ public class QueryService {
       String question,
       String mode,
       String providerId) {
-    String id = Json.id("qry");
-    String now = Instant.now().toString();
     long start = System.nanoTime();
-    var q =
-        Json.obj(
-            "queryId",
-            id,
-            "correlationId",
-            Errors.correlation(),
-            "warehouseId",
-            w.get("warehouseId"),
-            "datasetId",
-            d.get("datasetId"),
-            "engine",
-            w.get("engine"),
-            "question",
-            question,
-            "status",
-            "RUNNING",
-            "model",
-            null,
-            "provider",
-            null,
-            "executionMode",
-            mode.equals("DETERMINISTIC") ? "DETERMINISTIC" : "API",
-            "semanticVersion",
-            d.get("semanticVersion"),
-            "schemaVersion",
-            d.get("schemaVersion"),
-            "latencyMs",
-            null,
-            "createdAt",
-            now,
-            "completedAt",
-            null,
-            "candidateSql",
-            null,
-            "generatedSql",
-            null,
-            "sqlDialect",
-            w.get("engine"),
-            "explanation",
-            null,
-            "assumptions",
-            List.of(),
-            "selectedMetrics",
-            List.of(),
-            "selectedDimensions",
-            List.of(),
-            "sourceTables",
-            List.of(),
-            "result",
-            null,
-            "chart",
-            null,
-            "error",
-            null,
-            "owner",
-            store.actor());
+    var q = newQuery(w, d, question, mode.equals("DETERMINISTIC") ? "DETERMINISTIC" : "API");
     store.putQuery(q);
     QueryDeadline.start();
     try {
@@ -196,18 +139,7 @@ public class QueryService {
             "SCHEMA_MISMATCH",
             "Warehouse hoặc cấu hình dataset đã thay đổi; chạy lại với metadata hiện tại.");
       QueryDeadline.check();
-      var limits = Json.map(store.settings().get("limits"));
-      var result =
-          adapters
-              .get(w)
-              .executeReadOnlyQuery(
-                  w,
-                  adapters.password(store.credential(Json.str(w, "warehouseId"))),
-                  sql,
-                  ((Number) limits.get("maxRows")).intValue(),
-                  ((Number) limits.get("maxBytes")).intValue(),
-                  QueryDeadline.seconds(
-                      Math.max(1, ((Number) limits.get("statementTimeoutMs")).intValue() / 1000)));
+      var result = runReadOnly(w, sql, Integer.MAX_VALUE);
       QueryDeadline.check();
       q.put("result", result);
       q.put("chart", candidate.get("chartRecommendation"));
@@ -216,10 +148,195 @@ public class QueryService {
       q.put("selectedMetrics", candidate.get("selectedMetrics"));
       q.put("selectedDimensions", candidate.get("selectedDimensions"));
       q.put("status", "SUCCESS");
-    } catch (ApiException e) {
+    } catch (Exception e) {
+      recordFailure(q, w, e);
+    } finally {
+      QueryDeadline.clear();
+    }
+    return finish(q, start);
+  }
+
+  /**
+   * Structured semantic query (T-3.1.2, AC3): the user picks metric and dimension names, the
+   * compiler builds SQL from the validated model, and no LLM is called. The SQL still passes the
+   * same AST guard and bounded read-only execution as AI candidates, and is stored in history.
+   */
+  public Map<String, Object> runSemantic(String datasetId, Map<String, Object> b) {
+    Requests.fields(b, Set.of("metrics", "dimensions", "filters", "limit"));
+    var metrics = names(b.get("metrics"), "metrics", 1, 10);
+    var dimensions = names(b.get("dimensions"), "dimensions", 0, 5);
+    var filters = filters(b.get("filters"));
+    int limit = 1000;
+    if (b.containsKey("limit")) {
+      if (!(b.get("limit") instanceof Integer value) || value < 1 || value > 1000)
+        throw ApiException.bad("limit phải là số nguyên từ 1 đến 1000.");
+      limit = value;
+    }
+    var d = store.dataset(datasetId);
+    var w = store.warehouse(Json.str(d, "warehouseId"));
+    if (!Json.str(w, "status").equals("ACTIVE") || !Json.str(d, "status").equals("ACTIVE"))
+      throw new ApiException(
+          HttpStatus.CONFLICT, "DATASET_UNAVAILABLE", "Warehouse hoặc dataset không hoạt động.");
+    // Selection errors (unknown name, incompatible dimension, unsafe join) are request errors:
+    // they are returned directly and do not create a history entry.
+    var context = catalog.context(datasetId);
+    String engine = Json.str(w, "engine");
+    var compiled =
+        new SemanticCompiler(engine, adapters.get(w)::quoteIdentifier)
+            .compile(context, metrics, dimensions, filters);
+    String question =
+        "Chỉ số: "
+            + String.join(", ", metrics)
+            + (dimensions.isEmpty() ? "" : " | Chiều: " + String.join(", ", dimensions))
+            + (filters.isEmpty() ? "" : " | Lọc: " + filters.size() + " điều kiện");
+    long start = System.nanoTime();
+    var q = newQuery(w, d, question, "SEMANTIC");
+    q.put("model", "semantic-compiler");
+    store.putQuery(q);
+    QueryDeadline.start();
+    try {
+      q.put("candidateSql", compiled.sql());
+      var validated = guard.validate(compiled.sql(), engine, Json.objects(context.get("tables")));
+      q.put("generatedSql", validated.sql());
+      q.put("sourceTables", validated.sourceTables());
+      q.put("selectedMetrics", compiled.metrics());
+      q.put("selectedDimensions", compiled.dimensions());
+      QueryDeadline.check();
+      q.put("result", runReadOnly(w, validated.sql(), limit));
+      QueryDeadline.check();
+      q.put("status", "SUCCESS");
+    } catch (Exception e) {
+      recordFailure(q, w, e);
+    } finally {
+      QueryDeadline.clear();
+    }
+    return finish(q, start);
+  }
+
+  private static final Set<String> FILTER_OPERATORS =
+      Set.of("EQ", "NE", "GT", "GTE", "LT", "LTE", "CONTAINS", "IS_NULL", "IS_NOT_NULL");
+
+  /** Up to 10 {dimension, operator, value?}; values are literals, never SQL. */
+  private static List<Map<String, Object>> filters(Object value) {
+    if (value == null) return List.of();
+    if (!(value instanceof List<?> list) || list.size() > 10)
+      throw ApiException.bad("filters phải là danh sách tối đa 10 điều kiện.");
+    List<Map<String, Object>> result = new ArrayList<>();
+    for (Object item : list) {
+      if (!(item instanceof Map<?, ?>)) throw ApiException.bad("Điều kiện lọc không hợp lệ.");
+      var filter = Json.map(item);
+      Requests.fields(filter, Set.of("dimension", "operator", "value"));
+      Requests.required(filter, "dimension", "operator");
+      String operator = Json.str(filter, "operator");
+      if (!FILTER_OPERATORS.contains(operator))
+        throw ApiException.bad("Toán tử lọc không hợp lệ: " + operator);
+      boolean needsValue = !operator.startsWith("IS_");
+      if (needsValue == (filter.get("value") == null))
+        throw ApiException.bad(
+            needsValue
+                ? "Toán tử " + operator + " cần value."
+                : "IS_NULL/IS_NOT_NULL không nhận value.");
+      if (filter.get("value") instanceof String text && text.length() > 500)
+        throw ApiException.bad("Giá trị lọc tối đa 500 ký tự.");
+      result.add(filter);
+    }
+    return result;
+  }
+
+  private static List<String> names(Object value, String field, int min, int max) {
+    if (value == null && min == 0) return List.of();
+    if (!(value instanceof List<?> list)
+        || list.size() < min
+        || list.size() > max
+        || list.stream().anyMatch(x -> !(x instanceof String s) || s.isBlank() || s.length() > 200))
+      throw ApiException.bad(field + " phải là danh sách từ " + min + " đến " + max + " tên.");
+    return list.stream().map(String.class::cast).toList();
+  }
+
+  /** A RUNNING query record; history, result and export read the same shape for every mode. */
+  private Map<String, Object> newQuery(
+      Map<String, Object> w, Map<String, Object> d, String question, String executionMode) {
+    String now = Instant.now().toString();
+    return Json.obj(
+        "queryId",
+        Json.id("qry"),
+        "correlationId",
+        Errors.correlation(),
+        "warehouseId",
+        w.get("warehouseId"),
+        "datasetId",
+        d.get("datasetId"),
+        "engine",
+        w.get("engine"),
+        "question",
+        question,
+        "status",
+        "RUNNING",
+        "model",
+        null,
+        "provider",
+        null,
+        "executionMode",
+        executionMode,
+        "semanticVersion",
+        d.get("semanticVersion"),
+        "schemaVersion",
+        d.get("schemaVersion"),
+        "latencyMs",
+        null,
+        "createdAt",
+        now,
+        "completedAt",
+        null,
+        "candidateSql",
+        null,
+        "generatedSql",
+        null,
+        "sqlDialect",
+        w.get("engine"),
+        "explanation",
+        null,
+        "assumptions",
+        List.of(),
+        "selectedMetrics",
+        List.of(),
+        "selectedDimensions",
+        List.of(),
+        "sourceTables",
+        List.of(),
+        "result",
+        null,
+        "chart",
+        null,
+        "error",
+        null,
+        "owner",
+        store.actor());
+  }
+
+  /** Executes validated SQL with the reader credential under the platform row/byte/time limits. */
+  private Map<String, Object> runReadOnly(Map<String, Object> w, String sql, int rowLimit)
+      throws SQLException {
+    var limits = Json.map(store.settings().get("limits"));
+    return adapters
+        .get(w)
+        .executeReadOnlyQuery(
+            w,
+            adapters.password(store.credential(Json.str(w, "warehouseId"))),
+            sql,
+            Math.min(rowLimit, ((Number) limits.get("maxRows")).intValue()),
+            ((Number) limits.get("maxBytes")).intValue(),
+            QueryDeadline.seconds(
+                Math.max(1, ((Number) limits.get("statementTimeoutMs")).intValue() / 1000)));
+  }
+
+  /** Maps a failure to the query status and a safe error body; driver messages never leak. */
+  private void recordFailure(Map<String, Object> q, Map<String, Object> w, Exception failure) {
+    String id = Json.str(q, "queryId");
+    if (failure instanceof ApiException e) {
       q.put("status", terminalStatus(e.code));
       q.put("error", Errors.body(e.code, e.getMessage(), Json.obj("queryId", id)));
-    } catch (SQLException e) {
+    } else if (failure instanceof SQLException e) {
       org.slf4j.LoggerFactory.getLogger(QueryService.class)
           .warn(
               "Query failure engine={} SQLState={} vendorCode={} type={}",
@@ -237,18 +354,19 @@ public class QueryService {
                   ? "Truy vấn hết thời gian xử lý."
                   : "Không thực thi được truy vấn trên warehouse.",
               Json.obj("queryId", id)));
-    } catch (Exception e) {
+    } else {
       q.put("status", "QUERY_ERROR");
       q.put(
           "error",
           Errors.body("QUERY_ERROR", "Không xử lý được truy vấn.", Json.obj("queryId", id)));
-    } finally {
-      QueryDeadline.clear();
     }
+  }
+
+  private Map<String, Object> finish(Map<String, Object> q, long start) {
     q.put("completedAt", Instant.now().toString());
     q.put("latencyMs", (System.nanoTime() - start) / 1000000);
     store.putQuery(q);
-    store.audit("QUERY_" + q.get("status"), id);
+    store.audit("QUERY_" + q.get("status"), Json.str(q, "queryId"));
     return publicQuery(q);
   }
 
