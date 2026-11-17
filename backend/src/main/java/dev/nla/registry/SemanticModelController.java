@@ -60,6 +60,20 @@ public class SemanticModelController {
   @PreAuthorize("hasRole('ADMIN')")
   Map<String, Object> updateSemanticModel(
       @PathVariable String id, @RequestBody Map<String, Object> body) {
+    var checked = check(id, body);
+    var dataset = checked.dataset();
+    dataset.put("semanticVersion", body.get("semanticVersion"));
+    dataset.put("updatedAt", Instant.now().toString());
+    store.updateDataset(dataset, checked.model());
+    store.audit("SEMANTIC_UPDATE", id, Json.obj("semanticVersion", body.get("semanticVersion")));
+    return semanticModel(id);
+  }
+
+  /** The dataset record and the model that would be stored, after every check passed. */
+  private record Checked(Map<String, Object> dataset, Map<String, Object> model) {}
+
+  /** All checks shared by PUT and validate; throws on the first problem, stores nothing. */
+  private Checked check(String id, Map<String, Object> body) {
     Requests.fields(
         body,
         Set.of(
@@ -109,10 +123,6 @@ public class SemanticModelController {
           HttpStatus.CONFLICT,
           "SEMANTIC_MODEL_INVALID",
           "Định nghĩa đã thay đổi; hãy tăng semanticVersion trước khi lưu.");
-    dataset.put("semanticVersion", body.get("semanticVersion"));
-    dataset.put("updatedAt", Instant.now().toString());
-    store.updateDataset(dataset, model);
-    store.audit("SEMANTIC_UPDATE", id, Json.obj("semanticVersion", body.get("semanticVersion")));
-    return semanticModel(id);
+    return new Checked(dataset, model);
   }
 }
