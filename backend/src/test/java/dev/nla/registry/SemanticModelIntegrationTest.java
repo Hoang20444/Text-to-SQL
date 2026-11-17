@@ -246,6 +246,24 @@ class SemanticModelIntegrationTest {
   }
 
   @Test
+  void formulaColumnsMustExistAndStaySafe() throws Exception {
+    as(TestJwt.admin(), put(url()), modelWithRevenue("1.0.0", "SUM(amount)"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.code").value("SEMANTIC_MODEL_INVALID"))
+        .andExpect(jsonPath("$.error.details.path").value("metrics[0].expression"));
+
+    as(
+            TestJwt.admin(),
+            put(url()),
+            modelWithRevenue("1.0.0", "SUM(total) + (SELECT COUNT(*) FROM shop.customer)"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.details.path").value("metrics[0].expression"));
+
+    as(TestJwt.admin(), put(url()), modelWithRevenue("1.0.0", "SUM(orders.total)"))
+        .andExpect(status().isOk());
+  }
+
+  @Test
   void duplicateNamesAreRejected() throws Exception {
     var model = modelWithRevenue("1.0.0", "SUM(total)");
     var copy = new LinkedHashMap<>(Json.objects(model.get("metrics")).getFirst());

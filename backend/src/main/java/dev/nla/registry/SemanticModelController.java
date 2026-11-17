@@ -30,10 +30,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class SemanticModelController {
   private final Store store;
   private final CatalogService catalog;
+  private final MetricExpressions metricExpressions;
 
-  public SemanticModelController(Store store, CatalogService catalog) {
+  public SemanticModelController(
+      Store store, CatalogService catalog, MetricExpressions metricExpressions) {
     this.store = store;
     this.catalog = catalog;
+    this.metricExpressions = metricExpressions;
   }
 
   /** Any user allowed to read the dataset sees the full context; access is checked by Store. */
@@ -99,6 +102,8 @@ public class SemanticModelController {
     model.put("schemaVersion", dataset.get("schemaVersion"));
     model.put("tables", List.of());
     catalog.validateSemantic(model, tables);
+    String engine = Json.str(store.warehouse(Json.str(dataset, "warehouseId")), "engine");
+    metricExpressions.validate(engine, Json.objects(model.get("metrics")), tables);
     if (SemanticVersions.conflict(dataset.get("semanticVersion"), store.semantic(id), model))
       throw new ApiException(
           HttpStatus.CONFLICT,
