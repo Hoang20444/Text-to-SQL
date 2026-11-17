@@ -45,7 +45,7 @@ ai-service/.venv/Scripts/python data/scripts/verify_sprint2_ai.py
 
 ### CI trên GitHub Actions
 
-File `.github/workflows/ci.yml` chạy khi mở hoặc cập nhật PR vào `main`/`develop` (hoặc bấm chạy tay ở tab Actions). Push lên nhánh thường không chạy CI. Mỗi lần chạy kiểm tra đủ cả 3 phần:
+File `.github/workflows/ci.yml` chạy khi mở hoặc cập nhật PR vào `main`/`develop`, mỗi khi có code mới vào `main`/`develop` (merge PR hoặc push/merge thẳng), và khi bấm chạy tay ở tab Actions. Push lên nhánh tính năng không chạy CI cho đến khi mở PR. Mỗi lần chạy kiểm tra đủ cả 3 phần:
 
 | Job | Thư mục | Kiểm tra |
 |---|---|---|

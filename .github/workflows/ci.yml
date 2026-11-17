@@ -1,17 +1,20 @@
 # Continuous integration for backend (Java), frontend (React) and AI service (Python).
-# Like the HanGo setup: runs only on pull requests into main/develop (and by hand), and every
-# run checks all three parts so nothing is merged without a full build and test.
+# Runs on pull requests into main/develop, on every push that lands on main/develop (including a
+# direct merge without a PR), and by hand. Feature branches only run CI through their pull request.
+# Every run checks all three parts.
 name: CI
 
 on:
   pull_request:
+    branches: [main, develop]
+  push:
     branches: [main, develop]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push to the same pull request cancels the older run.
+# A newer push to the same pull request or branch cancels the older run.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
