@@ -7,6 +7,8 @@ import dev.nla.store.Store;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +18,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -67,6 +70,47 @@ public class SemanticModelController {
     store.updateDataset(dataset, checked.model());
     store.audit("SEMANTIC_UPDATE", id, Json.obj("semanticVersion", body.get("semanticVersion")));
     return semanticModel(id);
+  }
+
+  /**
+   * Runs every PUT check without saving, so the workbench can show problems before the admin
+   * commits a new version. Errors use the same codes and details.path as PUT; a valid model returns
+   * counts and non-blocking diagnostics.
+   */
+  @PostMapping("/datasets/{id}/semantic-model/validate")
+  @PreAuthorize("hasRole('ADMIN')")
+  Map<String, Object> validateSemanticModel(
+      @PathVariable String id, @RequestBody Map<String, Object> body) {
+    var model = check(id, body).model();
+    var metrics = Json.objects(model.get("metrics"));
+    var dimensions = Json.objects(model.get("dimensions"));
+    List<String> diagnostics = new ArrayList<>();
+    Set<Object> usedDimensions = new HashSet<>();
+    for (var metric : metrics) {
+      List<?> compatible =
+          metric.get("compatibleDimensions") instanceof List<?> list ? list : List.of();
+      usedDimensions.addAll(compatible);
+      if (compatible.isEmpty())
+        diagnostics.add(
+            "Metric '" + Json.str(metric, "name") + "' chưa có chiều phân tích tương thích.");
+    }
+    for (var dimension : dimensions)
+      if (!usedDimensions.contains(dimension.get("name")))
+        diagnostics.add(
+            "Dimension '" + Json.str(dimension, "name") + "' chưa được metric nào sử dụng.");
+    return Json.obj(
+        "valid",
+        true,
+        "semanticVersion",
+        model.get("semanticVersion"),
+        "metricCount",
+        metrics.size(),
+        "dimensionCount",
+        dimensions.size(),
+        "relationshipCount",
+        Json.objects(model.get("relationships")).size(),
+        "diagnostics",
+        diagnostics);
   }
 
   /** The dataset record and the model that would be stored, after every check passed. */

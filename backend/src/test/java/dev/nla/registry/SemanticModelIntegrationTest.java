@@ -264,6 +264,32 @@ class SemanticModelIntegrationTest {
   }
 
   @Test
+  void validateChecksWithoutSaving() throws Exception {
+    var model = modelWithRevenue("1.0.0", "SUM(total)");
+    var unused = new LinkedHashMap<>(Json.objects(model.get("dimensions")).getFirst());
+    unused.put("name", "customer_country_code");
+    model.put("dimensions", List.of(Json.objects(model.get("dimensions")).getFirst(), unused));
+
+    as(TestJwt.admin(), post(url() + "/validate"), model)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.valid").value(true))
+        .andExpect(jsonPath("$.semanticVersion").value("1.0.0"))
+        .andExpect(jsonPath("$.metricCount").value(1))
+        .andExpect(jsonPath("$.dimensionCount").value(2))
+        .andExpect(jsonPath("$.diagnostics.length()").value(1));
+    // Nothing was stored.
+    as(TestJwt.admin(), get(url()), null)
+        .andExpect(jsonPath("$.semanticVersion").value("0.0.0"))
+        .andExpect(jsonPath("$.metrics").isEmpty());
+
+    as(TestJwt.admin(), post(url() + "/validate"), modelWithRevenue("1.0.0", "SUM(amount)"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.details.path").value("metrics[0].expression"));
+    as(TestJwt.analyst(), post(url() + "/validate"), modelWithRevenue("1.0.0", "SUM(total)"))
+        .andExpect(status().isForbidden());
+  }
+
+  @Test
   void duplicateNamesAreRejected() throws Exception {
     var model = modelWithRevenue("1.0.0", "SUM(total)");
     var copy = new LinkedHashMap<>(Json.objects(model.get("metrics")).getFirst());
