@@ -253,9 +253,7 @@ def ask_live_ollama(question: str, dialect: str, model: str) -> None:
     sem = json.loads((ROOT / "data/chinook" / semantic_file).read_text(encoding="utf-8"))
     if not sem.get("tables"):
         schema_name = (
-            "public"
-            if dialect == "POSTGRESQL"
-            else "nla_chinook" if dialect == "MYSQL" else "dbo"
+            "public" if dialect == "POSTGRESQL" else "nla_chinook" if dialect == "MYSQL" else "dbo"
         )
         pg = dialect == "POSTGRESQL"
         chinook_catalog = [
