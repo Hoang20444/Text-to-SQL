@@ -78,65 +78,8 @@ public class QueryService {
       String question,
       String mode,
       String providerId) {
-    String id = Json.id("qry");
-    String now = Instant.now().toString();
     long start = System.nanoTime();
-    var q =
-        Json.obj(
-            "queryId",
-            id,
-            "correlationId",
-            Errors.correlation(),
-            "warehouseId",
-            w.get("warehouseId"),
-            "datasetId",
-            d.get("datasetId"),
-            "engine",
-            w.get("engine"),
-            "question",
-            question,
-            "status",
-            "RUNNING",
-            "model",
-            null,
-            "provider",
-            null,
-            "executionMode",
-            mode.equals("DETERMINISTIC") ? "DETERMINISTIC" : "API",
-            "semanticVersion",
-            d.get("semanticVersion"),
-            "schemaVersion",
-            d.get("schemaVersion"),
-            "latencyMs",
-            null,
-            "createdAt",
-            now,
-            "completedAt",
-            null,
-            "candidateSql",
-            null,
-            "generatedSql",
-            null,
-            "sqlDialect",
-            w.get("engine"),
-            "explanation",
-            null,
-            "assumptions",
-            List.of(),
-            "selectedMetrics",
-            List.of(),
-            "selectedDimensions",
-            List.of(),
-            "sourceTables",
-            List.of(),
-            "result",
-            null,
-            "chart",
-            null,
-            "error",
-            null,
-            "owner",
-            store.actor());
+    var q = newQuery(w, d, question, mode.equals("DETERMINISTIC") ? "DETERMINISTIC" : "API");
     store.putQuery(q);
     QueryDeadline.start();
     try {
@@ -196,18 +139,7 @@ public class QueryService {
             "SCHEMA_MISMATCH",
             "Warehouse hoặc cấu hình dataset đã thay đổi; chạy lại với metadata hiện tại.");
       QueryDeadline.check();
-      var limits = Json.map(store.settings().get("limits"));
-      var result =
-          adapters
-              .get(w)
-              .executeReadOnlyQuery(
-                  w,
-                  adapters.password(store.credential(Json.str(w, "warehouseId"))),
-                  sql,
-                  ((Number) limits.get("maxRows")).intValue(),
-                  ((Number) limits.get("maxBytes")).intValue(),
-                  QueryDeadline.seconds(
-                      Math.max(1, ((Number) limits.get("statementTimeoutMs")).intValue() / 1000)));
+      var result = runReadOnly(w, sql, Integer.MAX_VALUE);
       QueryDeadline.check();
       q.put("result", result);
       q.put("chart", candidate.get("chartRecommendation"));
@@ -216,10 +148,98 @@ public class QueryService {
       q.put("selectedMetrics", candidate.get("selectedMetrics"));
       q.put("selectedDimensions", candidate.get("selectedDimensions"));
       q.put("status", "SUCCESS");
-    } catch (ApiException e) {
+    } catch (Exception e) {
+      recordFailure(q, w, e);
+    } finally {
+      QueryDeadline.clear();
+    }
+    return finish(q, start);
+  }
+
+  /** A RUNNING query record; history, result and export read the same shape for every mode. */
+  private Map<String, Object> newQuery(
+      Map<String, Object> w, Map<String, Object> d, String question, String executionMode) {
+    String now = Instant.now().toString();
+    return Json.obj(
+        "queryId",
+        Json.id("qry"),
+        "correlationId",
+        Errors.correlation(),
+        "warehouseId",
+        w.get("warehouseId"),
+        "datasetId",
+        d.get("datasetId"),
+        "engine",
+        w.get("engine"),
+        "question",
+        question,
+        "status",
+        "RUNNING",
+        "model",
+        null,
+        "provider",
+        null,
+        "executionMode",
+        executionMode,
+        "semanticVersion",
+        d.get("semanticVersion"),
+        "schemaVersion",
+        d.get("schemaVersion"),
+        "latencyMs",
+        null,
+        "createdAt",
+        now,
+        "completedAt",
+        null,
+        "candidateSql",
+        null,
+        "generatedSql",
+        null,
+        "sqlDialect",
+        w.get("engine"),
+        "explanation",
+        null,
+        "assumptions",
+        List.of(),
+        "selectedMetrics",
+        List.of(),
+        "selectedDimensions",
+        List.of(),
+        "sourceTables",
+        List.of(),
+        "result",
+        null,
+        "chart",
+        null,
+        "error",
+        null,
+        "owner",
+        store.actor());
+  }
+
+  /** Executes validated SQL with the reader credential under the platform row/byte/time limits. */
+  private Map<String, Object> runReadOnly(Map<String, Object> w, String sql, int rowLimit)
+      throws SQLException {
+    var limits = Json.map(store.settings().get("limits"));
+    return adapters
+        .get(w)
+        .executeReadOnlyQuery(
+            w,
+            adapters.password(store.credential(Json.str(w, "warehouseId"))),
+            sql,
+            Math.min(rowLimit, ((Number) limits.get("maxRows")).intValue()),
+            ((Number) limits.get("maxBytes")).intValue(),
+            QueryDeadline.seconds(
+                Math.max(1, ((Number) limits.get("statementTimeoutMs")).intValue() / 1000)));
+  }
+
+  /** Maps a failure to the query status and a safe error body; driver messages never leak. */
+  private void recordFailure(Map<String, Object> q, Map<String, Object> w, Exception failure) {
+    String id = Json.str(q, "queryId");
+    if (failure instanceof ApiException e) {
       q.put("status", terminalStatus(e.code));
       q.put("error", Errors.body(e.code, e.getMessage(), Json.obj("queryId", id)));
-    } catch (SQLException e) {
+    } else if (failure instanceof SQLException e) {
       org.slf4j.LoggerFactory.getLogger(QueryService.class)
           .warn(
               "Query failure engine={} SQLState={} vendorCode={} type={}",
@@ -237,18 +257,19 @@ public class QueryService {
                   ? "Truy vấn hết thời gian xử lý."
                   : "Không thực thi được truy vấn trên warehouse.",
               Json.obj("queryId", id)));
-    } catch (Exception e) {
+    } else {
       q.put("status", "QUERY_ERROR");
       q.put(
           "error",
           Errors.body("QUERY_ERROR", "Không xử lý được truy vấn.", Json.obj("queryId", id)));
-    } finally {
-      QueryDeadline.clear();
     }
+  }
+
+  private Map<String, Object> finish(Map<String, Object> q, long start) {
     q.put("completedAt", Instant.now().toString());
     q.put("latencyMs", (System.nanoTime() - start) / 1000000);
     store.putQuery(q);
-    store.audit("QUERY_" + q.get("status"), id);
+    store.audit("QUERY_" + q.get("status"), Json.str(q, "queryId"));
     return publicQuery(q);
   }
 
