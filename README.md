@@ -43,6 +43,24 @@ ai-service/.venv/Scripts/python data/scripts/verify_sprint1_ai.py
 ai-service/.venv/Scripts/python data/scripts/verify_sprint2_ai.py
 ```
 
+### CI trên GitHub Actions
+
+File `.github/workflows/ci.yml` chạy mỗi khi push bất kỳ nhánh nào và khi mở PR vào `main`/`develop`. Mỗi phần chỉ chạy khi thư mục của nó thay đổi (phần không đổi hiện "skipped"):
+
+| Job | Chạy khi đổi | Kiểm tra |
+|---|---|---|
+| Backend | `backend/` | Google Java Format, `mvn test` (Testcontainers PostgreSQL/MySQL/SQL Server) |
+| Frontend | `frontend/` | Prettier, `npm run build` (gồm kiểm tra TypeScript), `npm test` |
+| AI service | `ai-service/`, `data/scripts/`, `infra/local/` | Black, isort, `pytest ai-service infra/local/test_llm_profile.py` |
+
+Format trước khi push để CI không báo lỗi:
+
+```bash
+cd backend && mvn com.spotify.fmt:fmt-maven-plugin:2.25:format
+cd frontend && npm run format
+python -m isort ai-service data/scripts && python -m black .
+```
+
 ### 3. Chạy dịch vụ AI kết nối với Ollama cục bộ (`qwen3:4b`)
 
 ```powershell
