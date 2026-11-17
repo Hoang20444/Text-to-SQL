@@ -1,6 +1,8 @@
 @echo off
+setlocal
 title Natural Language Analytics Warehouse - Start Services
-cd /d "D:\MyP\Text-to-SQL-1"
+set "ROOT=%~dp0"
+cd /d "%ROOT%"
 
 echo ========================================================
 echo  KHOI DONG TOAN BO HE THONG TEXT-TO-SQL
@@ -16,7 +18,7 @@ if %errorlevel% equ 0 (
     echo   -^> Python AI Service da dang chay tren cong 8000.
 ) else (
     echo   -^> Dang khoi dong Python AI Service...
-    start "Python AI Service (Port 8000)" powershell -NoExit -Command "cd D:\MyP\Text-to-SQL-1\ai-service; .\.venv\Scripts\Activate.ps1; $env:PYTHON_AI_TOKEN='Nla_ynJKqNl7nFl_nX3M5zUc1fyYKOJyJ_w02jH29!'; $env:LLM_TIMEOUT_MS='55000'; $env:LLM_MAX_OUTPUT_TOKENS='250'; uvicorn app:app --host 127.0.0.1 --port 8000"
+    start "Python AI Service (Port 8000)" powershell -NoExit -ExecutionPolicy Bypass -File "%ROOT%ai-service\run.ps1"
 )
 
 echo [3/4] Kiem tra Java Backend (Port 8080)...
@@ -25,7 +27,7 @@ if %errorlevel% equ 0 (
     echo   -^> Java Backend da dang chay tren cong 8080.
 ) else (
     echo   -^> Dang khoi dong Java Backend...
-    start "Java Backend (Port 8080)" powershell -NoExit -Command "cd D:\MyP\Text-to-SQL-1\backend; mvn spring-boot:run"
+    start "Java Backend (Port 8080)" powershell -NoExit -Command "Set-Location '%ROOT%backend'; mvn spring-boot:run"
 )
 
 echo [4/4] Kiem tra React Frontend (Port 5173)...
@@ -34,7 +36,7 @@ if %errorlevel% equ 0 (
     echo   -^> React Frontend da dang chay tren cong 5173.
 ) else (
     echo   -^> Dang khoi dong React Frontend...
-    start "React Frontend (Port 5173)" powershell -NoExit -Command "cd D:\MyP\Text-to-SQL-1\frontend; npm run dev"
+    start "React Frontend (Port 5173)" powershell -NoExit -Command "Set-Location '%ROOT%frontend'; npm run dev"
 )
 
 echo.

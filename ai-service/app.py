@@ -354,6 +354,11 @@ def provider_payload(
             },
         ],
     }
+    if provider_kind == "OLLAMA":
+        body["options"] = {
+            "num_ctx": int(os.getenv("OLLAMA_NUM_CTX", "2048")),
+            "num_thread": int(os.getenv("OLLAMA_NUM_THREADS", "8")),
+        }
     effort = os.getenv("LLM_REASONING_EFFORT", "")
     if (
         not effort
@@ -740,7 +745,7 @@ class SemanticContextSelector:
         exact_examples = [item for item in ranked_examples if item[2]]
         if exact_examples:
             ranked_examples = exact_examples
-        example_positions = [position for position, _, _ in ranked_examples[:5]]
+        example_positions = [position for position, _, _ in ranked_examples[: 5 if offline else 2]]
 
         metric_names = {source["metrics"][position]["name"] for position in metric_positions}
         dimension_names = {
