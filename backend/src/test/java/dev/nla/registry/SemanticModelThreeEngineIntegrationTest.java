@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +26,7 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -73,6 +75,7 @@ class SemanticModelThreeEngineIntegrationTest {
   }
 
   @Autowired MockMvc mvc;
+  @Autowired JdbcTemplate jdbc;
 
   @BeforeAll
   static void createShopSchemas() throws Exception {
@@ -86,6 +89,7 @@ class SemanticModelThreeEngineIntegrationTest {
       s.execute(
           "CREATE TABLE shop.orders (order_id bigint PRIMARY KEY, customer_id integer NOT NULL"
               + " REFERENCES shop.customer(customer_id), total numeric(10,2))");
+      insertSampleRows(s);
     }
     try (Connection c =
             DriverManager.getConnection(mysql.getJdbcUrl(), "root", mysql.getPassword());
@@ -98,6 +102,7 @@ class SemanticModelThreeEngineIntegrationTest {
           "CREATE TABLE shop.orders (order_id bigint PRIMARY KEY, customer_id int NOT NULL,"
               + " total decimal(10,2), CONSTRAINT fk_orders_customer FOREIGN KEY (customer_id)"
               + " REFERENCES shop.customer(customer_id)) ENGINE=InnoDB");
+      insertSampleRows(s);
     }
     try (Connection c =
             DriverManager.getConnection(
@@ -113,7 +118,17 @@ class SemanticModelThreeEngineIntegrationTest {
           "CREATE TABLE shop.orders (order_id bigint PRIMARY KEY, customer_id int NOT NULL"
               + " CONSTRAINT fk_orders_customer REFERENCES shop.customer(customer_id),"
               + " total decimal(10,2))");
+      insertSampleRows(s);
     }
+  }
+
+  /** Same rows on every engine: VN has two customers and a NULL total, US has one order. */
+  private static void insertSampleRows(Statement s) throws Exception {
+    s.execute(
+        "INSERT INTO shop.customer (customer_id, country) VALUES (1, 'VN'), (2, 'US'), (3, 'VN')");
+    s.execute(
+        "INSERT INTO shop.orders (order_id, customer_id, total) VALUES"
+            + " (10, 1, 100.50), (11, 1, 20.00), (12, 2, 5.25), (13, 3, NULL), (14, 3, 9.75)");
   }
 
   private static Map<String, Object> connection(String engine) {
@@ -178,6 +193,14 @@ class SemanticModelThreeEngineIntegrationTest {
         json(
             as(TestJwt.admin(), post("/api/v1/warehouses"), connection(engine))
                 .andExpect(status().isCreated()));
+    // A new warehouse is INVALID until a successful connection test makes it ACTIVE.
+    as(TestJwt.admin(), post("/api/v1/warehouses/" + warehouse.get("warehouseId") + "/test"), null)
+        .andExpect(jsonPath("$.reachable").value(true));
+    // ANALYST only sees warehouses granted to it; ADMIN sees all.
+    jdbc.update(
+        "INSERT INTO resource_access(subject,warehouse_id) VALUES (?,?)",
+        TestJwt.ANALYST_SUB,
+        warehouse.get("warehouseId"));
     var dataset =
         json(
             as(
@@ -238,6 +261,93 @@ class SemanticModelThreeEngineIntegrationTest {
                 "synonyms",
                 List.of("doanh thu"))));
     return model;
+  }
+
+  /** Saves the revenue model and returns the dataset's semantic-query URL. */
+  private String semanticQueryUrl(String engine) throws Exception {
+    String dataset = registerDataset(engine);
+    String url = "/api/v1/datasets/" + dataset + "/semantic-model";
+    as(TestJwt.admin(), put(url), model(url, "1.0.0", "SUM(orders.total)"))
+        .andExpect(status().isOk());
+    return "/api/v1/datasets/" + dataset + "/semantic-query";
+  }
+
+  /** AC3 + AC4: the same metric query compiles per dialect and returns the same rows. */
+  @Test
+  void semanticQueryReturnsTheSameRowsOnEveryEngine() throws Exception {
+    var expected =
+        List.of(
+            Json.obj("country", "US", "revenue", "5.25"),
+            Json.obj("country", "VN", "revenue", "130.25"));
+    for (String engine : List.of("POSTGRESQL", "MYSQL", "SQL_SERVER")) {
+      String url = semanticQueryUrl(engine);
+
+      var query =
+          json(
+              as(
+                      TestJwt.analyst(),
+                      post(url),
+                      Json.obj("metrics", List.of("revenue"), "dimensions", List.of("country")))
+                  .andExpect(status().isCreated())
+                  .andExpect(jsonPath("$.status").value("SUCCESS"))
+                  .andExpect(jsonPath("$.executionMode").value("SEMANTIC"))
+                  .andExpect(jsonPath("$.model").value("semantic-compiler"))
+                  .andExpect(jsonPath("$.semanticVersion").value("1.0.0"))
+                  .andExpect(jsonPath("$.selectedMetrics[0]").value("revenue")));
+      var rows = Json.objects(Json.map(query.get("result")).get("rows"));
+      assertThat(rows).as(engine).isEqualTo(expected);
+      assertThat(Json.str(query, "generatedSql")).as(engine).contains("GROUP BY");
+
+      as(TestJwt.analyst(), get("/api/v1/query/" + query.get("queryId")), null)
+          .andExpect(status().isOk())
+          .andExpect(jsonPath("$.executionMode").value("SEMANTIC"));
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void semanticQueryFiltersAndRejectsBadSelections(String engine) throws Exception {
+    String url = semanticQueryUrl(engine);
+
+    as(
+            TestJwt.analyst(),
+            post(url),
+            Json.obj(
+                "metrics",
+                List.of("revenue"),
+                "dimensions",
+                List.of("country"),
+                "filters",
+                List.of(Json.obj("dimension", "country", "operator", "EQ", "value", "VN"))))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("SUCCESS"))
+        .andExpect(jsonPath("$.result.rows.length()").value(1))
+        .andExpect(jsonPath("$.result.rows[0].revenue").value("130.25"));
+
+    // A quote inside the value stays data: no row matches, nothing is injected.
+    as(
+            TestJwt.analyst(),
+            post(url),
+            Json.obj(
+                "metrics",
+                List.of("revenue"),
+                "dimensions",
+                List.of("country"),
+                "filters",
+                List.of(
+                    Json.obj("dimension", "country", "operator", "EQ", "value", "VN' OR '1'='1"))))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("SUCCESS"))
+        .andExpect(jsonPath("$.result.rows.length()").value(0));
+
+    as(TestJwt.analyst(), post(url), Json.obj("metrics", List.of("profit")))
+        .andExpect(status().isBadRequest());
+    as(TestJwt.analyst(), post(url), Json.obj("metrics", List.of()))
+        .andExpect(status().isBadRequest());
+    as(TestJwt.analyst(), post(url), Json.obj("metrics", List.of("revenue"), "sql", "SELECT 1"))
+        .andExpect(status().isBadRequest());
+    as(TestJwt.viewer(), post(url), Json.obj("metrics", List.of("revenue")))
+        .andExpect(status().isForbidden());
   }
 
   @ParameterizedTest
