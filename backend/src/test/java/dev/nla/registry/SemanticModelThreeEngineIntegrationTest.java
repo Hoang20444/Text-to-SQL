@@ -278,4 +278,34 @@ class SemanticModelThreeEngineIntegrationTest {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.semanticVersion").value("1.1.0"));
   }
+
+  /**
+   * A formula written with another engine's identifier quoting fails on save, not at query time.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void formulaMustUseTheWarehouseDialect(String engine) throws Exception {
+    String url = "/api/v1/datasets/" + registerDataset(engine) + "/semantic-model";
+    String backticks = "SUM(`orders`.`total`)";
+    String brackets = "SUM([orders].[total])";
+
+    var mysqlStyle = as(TestJwt.admin(), post(url + "/validate"), model(url, "1.0.0", backticks));
+    var sqlServerStyle =
+        as(TestJwt.admin(), post(url + "/validate"), model(url, "1.0.0", brackets));
+
+    switch (engine) {
+      case "MYSQL" -> {
+        mysqlStyle.andExpect(status().isOk());
+        sqlServerStyle.andExpect(status().isConflict());
+      }
+      case "SQL_SERVER" -> {
+        mysqlStyle.andExpect(status().isConflict());
+        sqlServerStyle.andExpect(status().isOk());
+      }
+      default -> {
+        mysqlStyle.andExpect(status().isConflict());
+        sqlServerStyle.andExpect(status().isConflict());
+      }
+    }
+  }
 }
