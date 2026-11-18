@@ -3,6 +3,7 @@ package dev.nla.registry;
 import dev.nla.common.ApiException;
 import dev.nla.common.Json;
 import dev.nla.common.Requests;
+import dev.nla.query.SemanticCompiler;
 import dev.nla.store.Store;
 import java.time.DateTimeException;
 import java.time.Instant;
@@ -118,6 +119,48 @@ public class SemanticModelController {
         diagnostics);
   }
 
+  /**
+   * Each compatible dimension must be reachable from the metric's table through many-to-one joins
+   * (T-3.3.1), using the same rules as semantic-query, so a saved pair never fails or fans out at
+   * query time. Metrics measured on several tables are left to the query-time check.
+   */
+  private static void checkCompatibleDimensions(
+      String engine, Map<String, Object> model, List<Map<String, Object>> tables) {
+    var context = new LinkedHashMap<>(model);
+    List<Map<String, Object>> relationships = new ArrayList<>();
+    Set<String> allowed = new HashSet<>();
+    tables.forEach(t -> allowed.add(CatalogService.key(t)));
+    tables.stream()
+        .flatMap(t -> Json.objects(t.get("foreignKeys")).stream())
+        .filter(
+            rel ->
+                allowed.contains(
+                    CatalogService.key(Json.map(Json.map(rel.get("to")).get("table")))))
+        .forEach(relationships::add);
+    relationships.addAll(Json.objects(model.get("relationships")));
+    context.put("relationships", relationships);
+    // Only reachability matters here; the real dialect quoting is applied at query time.
+    var compiler = new SemanticCompiler(engine, identifier -> identifier);
+    var metrics = Json.objects(model.get("metrics"));
+    for (int i = 0; i < metrics.size(); i++) {
+      var metric = metrics.get(i);
+      if (Json.objects(metric.get("tableRefs")).size() != 1) continue;
+      List<?> compatible =
+          metric.get("compatibleDimensions") instanceof List<?> list ? list : List.of();
+      for (Object dimension : compatible) {
+        try {
+          compiler.compile(context, List.of(Json.str(metric, "name")), List.of((String) dimension));
+        } catch (ApiException e) {
+          throw new ApiException(
+              HttpStatus.CONFLICT,
+              "SEMANTIC_MODEL_INVALID",
+              e.getMessage(),
+              Json.obj("path", "metrics[" + i + "].compatibleDimensions"));
+        }
+      }
+    }
+  }
+
   /** The dataset record and the model that would be stored, after every check passed. */
   private record Checked(Map<String, Object> dataset, Map<String, Object> model) {}
 
@@ -168,6 +211,7 @@ public class SemanticModelController {
     var warehouse = store.warehouse(Json.str(dataset, "warehouseId"));
     String engine = Json.str(warehouse, "engine");
     metricExpressions.validate(engine, Json.objects(model.get("metrics")), tables);
+    checkCompatibleDimensions(engine, model, tables);
     if (SemanticVersions.conflict(dataset.get("semanticVersion"), store.semantic(id), model))
       throw new ApiException(
           HttpStatus.CONFLICT,
