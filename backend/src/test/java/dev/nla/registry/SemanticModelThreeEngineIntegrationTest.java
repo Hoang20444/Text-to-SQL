@@ -129,6 +129,14 @@ class SemanticModelThreeEngineIntegrationTest {
     s.execute(
         "INSERT INTO shop.orders (order_id, customer_id, total) VALUES"
             + " (10, 1, 100.50), (11, 1, 20.00), (12, 2, 5.25), (13, 3, NULL), (14, 3, 9.75)");
+    // Lookup tables without a primary key (T-3.3.1): country_info repeats 'VN',
+    // country_code has one row per country, so only the second can be a "one" side.
+    s.execute("CREATE TABLE shop.country_info (country varchar(60) NOT NULL, region varchar(60))");
+    s.execute(
+        "INSERT INTO shop.country_info (country, region) VALUES"
+            + " ('VN', 'Asia'), ('VN', 'Southeast Asia'), ('US', 'America')");
+    s.execute("CREATE TABLE shop.country_code (country varchar(60) NOT NULL, iso varchar(3))");
+    s.execute("INSERT INTO shop.country_code (country, iso) VALUES ('VN', 'VNM'), ('US', 'USA')");
   }
 
   private static Map<String, Object> connection(String engine) {
@@ -189,6 +197,10 @@ class SemanticModelThreeEngineIntegrationTest {
   }
 
   private String registerDataset(String engine) throws Exception {
+    return registerDataset(engine, List.of("customer", "orders"));
+  }
+
+  private String registerDataset(String engine, List<String> tableNames) throws Exception {
     var warehouse =
         json(
             as(TestJwt.admin(), post("/api/v1/warehouses"), connection(engine))
@@ -214,9 +226,9 @@ class SemanticModelThreeEngineIntegrationTest {
                         "allowedSchemas",
                         List.of("shop"),
                         "allowedTables",
-                        List.of(
-                            Json.obj("schema", "shop", "name", "customer"),
-                            Json.obj("schema", "shop", "name", "orders"))))
+                        tableNames.stream()
+                            .map(name -> Json.obj("schema", "shop", "name", name))
+                            .toList()))
                 .andExpect(status().isCreated()));
     return Json.str(dataset, "datasetId");
   }
@@ -417,5 +429,133 @@ class SemanticModelThreeEngineIntegrationTest {
         sqlServerStyle.andExpect(status().isConflict());
       }
     }
+  }
+
+  private static Map<String, Object> endpoint(String table, String column) {
+    return Json.obj("table", Json.obj("schema", "shop", "name", table), "column", column);
+  }
+
+  /**
+   * Revenue model on a dataset that also has the lookup tables: adds one dimension on lookupTable
+   * and the declared relationship (if any) between customer.country and that table.
+   */
+  private Map<String, Object> lookupModel(
+      String url, String lookupTable, String lookupColumn, Map<String, Object> relationship)
+      throws Exception {
+    var model = model(url, "1.0.0", "SUM(orders.total)");
+    var dimensions = new java.util.ArrayList<>(Json.objects(model.get("dimensions")));
+    dimensions.add(
+        Json.obj(
+            "name",
+            lookupColumn,
+            "table",
+            Json.obj("schema", "shop", "name", lookupTable),
+            "column",
+            lookupColumn));
+    model.put("dimensions", dimensions);
+    var metric = new LinkedHashMap<>(Json.objects(model.get("metrics")).getFirst());
+    metric.put("compatibleDimensions", List.of("country", lookupColumn));
+    model.put("metrics", List.of(metric));
+    model.put("relationships", relationship == null ? List.of() : List.of(relationship));
+    return model;
+  }
+
+  private static final List<String> LOOKUP_TABLES =
+      List.of("customer", "orders", "country_info", "country_code");
+
+  /** T-3.3.1 AC1: a declared "one" side with duplicated values is rejected on every engine. */
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void duplicatedOneSideIsRejected(String engine) throws Exception {
+    String url = "/api/v1/datasets/" + registerDataset(engine, LOOKUP_TABLES) + "/semantic-model";
+
+    var manyToOne =
+        lookupModel(
+            url,
+            "country_info",
+            "region",
+            Json.obj(
+                "from",
+                endpoint("customer", "country"),
+                "to",
+                endpoint("country_info", "country"),
+                "cardinality",
+                "MANY_TO_ONE"));
+    as(TestJwt.admin(), put(url), manyToOne)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.code").value("SEMANTIC_MODEL_INVALID"))
+        .andExpect(jsonPath("$.error.details.path").value("relationships[0].to.column"));
+    as(TestJwt.admin(), post(url + "/validate"), manyToOne)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.details.path").value("relationships[0].to.column"));
+
+    // The same mistake written from the other direction is caught on the "from" side.
+    var oneToMany =
+        lookupModel(
+            url,
+            "country_info",
+            "region",
+            Json.obj(
+                "from",
+                endpoint("country_info", "country"),
+                "to",
+                endpoint("customer", "country"),
+                "cardinality",
+                "ONE_TO_MANY"));
+    as(TestJwt.admin(), put(url), oneToMany)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.details.path").value("relationships[0].from.column"));
+
+    // Nothing was saved.
+    as(TestJwt.admin(), get(url), null).andExpect(jsonPath("$.semanticVersion").value("0.0.0"));
+  }
+
+  /** A unique column without a key is proven by the scan, saved, and joined at query time. */
+  @Test
+  void uniqueColumnWithoutKeyIsProvenAndGivesTheSameRowsOnEveryEngine() throws Exception {
+    var expected =
+        List.of(
+            Json.obj("iso", "USA", "revenue", "5.25"), Json.obj("iso", "VNM", "revenue", "130.25"));
+    for (String engine : List.of("POSTGRESQL", "MYSQL", "SQL_SERVER")) {
+      String dataset = registerDataset(engine, LOOKUP_TABLES);
+      String url = "/api/v1/datasets/" + dataset + "/semantic-model";
+      var model =
+          lookupModel(
+              url,
+              "country_code",
+              "iso",
+              Json.obj(
+                  "from",
+                  endpoint("customer", "country"),
+                  "to",
+                  endpoint("country_code", "country"),
+                  "cardinality",
+                  "MANY_TO_ONE"));
+      as(TestJwt.admin(), put(url), model).andExpect(status().isOk());
+
+      var query =
+          json(
+              as(
+                      TestJwt.analyst(),
+                      post("/api/v1/datasets/" + dataset + "/semantic-query"),
+                      Json.obj("metrics", List.of("revenue"), "dimensions", List.of("iso")))
+                  .andExpect(status().isCreated())
+                  .andExpect(jsonPath("$.status").value("SUCCESS")));
+      assertThat(Json.objects(Json.map(query.get("result")).get("rows")))
+          .as(engine)
+          .isEqualTo(expected);
+    }
+  }
+
+  /** A compatible dimension with no safe join path is rejected when saving, not at query time. */
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void compatibleDimensionWithoutJoinPathIsRejected(String engine) throws Exception {
+    String url = "/api/v1/datasets/" + registerDataset(engine, LOOKUP_TABLES) + "/semantic-model";
+
+    as(TestJwt.admin(), put(url), lookupModel(url, "country_code", "iso", null))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.code").value("SEMANTIC_MODEL_INVALID"))
+        .andExpect(jsonPath("$.error.details.path").value("metrics[0].compatibleDimensions"));
   }
 }
