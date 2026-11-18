@@ -17,6 +17,11 @@ from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from candidate_validation import (
+    InvalidAggregation,
+    explicit_physical_aggregate_intent,
+    validate_aggregation,
+)
 from context_index import get_schema_index, normalize_text, overlap_score
 from inference_admission import InferenceUnavailable, inference_slot
 from model_provider import (
@@ -30,6 +35,7 @@ from model_provider import (
     valid_model_name,
 )
 from schema_relevance import AmbiguousTableReference, table_mentions
+from semantic_planner import PlanningFailure, PlanRequest, PlanResponse, plan_sql
 
 logger = logging.getLogger(__name__)
 
@@ -979,6 +985,11 @@ class OpenAICompatibleModelClient:
             )
         except AmbiguousTableReference:
             raise Controlled("INSUFFICIENT_CONTEXT") from None
+        physical_intent = explicit_physical_aggregate_intent(
+            request.question,
+            request.semanticContext.model_dump(by_alias=True),
+            require_table=True,
+        )
 
         async def checked(body: dict[str, Any]) -> Candidate:
             obj, model = await provider_json(body, provider)
@@ -991,13 +1002,100 @@ class OpenAICompatibleModelClient:
             if len(assumptions) > 100:
                 raise Controlled("INVALID_MODEL_RESPONSE", 502)
             candidate.assumptions = assumptions
+            # Security/reference/metadata checks apply before any correction and
+            # again to the second answer. No provider failure or unsafe SQL retry.
             return validate(candidate, context, request.sqlDialect)
+
+        async def generate_checked() -> Candidate:
+            retried_low_confidence = False
+            try:
+                candidate = await checked(payload)
+            except Controlled as rejection:
+                if rejection.code != "LOW_CONFIDENCE" or physical_intent is None:
+                    raise
+                repair = deepcopy(payload)
+                repair["messages"].append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The model marked this request LOW_CONFIDENCE. The physical request "
+                            "is grounded in exactly one allowed table, one numeric column, and "
+                            "one requested aggregate. Missing business metric definitions do "
+                            "not make this explicit physical query unsupported. Return a complete "
+                            "read-only SQL candidate for the exact authorized identifiers and "
+                            "operation below. Keep selectedMetrics and selectedDimensions empty. "
+                            "Use the named temporal column as the grouping grain when present. "
+                            "Do not substitute a different measure or invent business meaning. "
+                            "Grounded physical intent: "
+                            + json.dumps(physical_intent, ensure_ascii=False, sort_keys=True)
+                        ),
+                    }
+                )
+                try:
+                    maximum = int(os.getenv("LLM_REQUEST_MAX_BYTES", "48000"))
+                except ValueError:
+                    raise Controlled("INSUFFICIENT_CONTEXT") from None
+                if len(json.dumps(repair, ensure_ascii=False).encode()) > maximum:
+                    raise Controlled("INSUFFICIENT_CONTEXT")
+                candidate = await checked(repair)
+                retried_low_confidence = True
+            try:
+                validate_aggregation(
+                    candidate.sql,
+                    request.sqlDialect,
+                    context,
+                    candidate.chartRecommendation.model_dump(),
+                    request.question,
+                )
+                return candidate
+            except InvalidAggregation as diagnostic:
+                if retried_low_confidence:
+                    raise Controlled("INVALID_MODEL_RESPONSE", 502) from None
+                if len(candidate.sql) > 8000:
+                    raise Controlled("INVALID_MODEL_RESPONSE", 502) from None
+                repair = deepcopy(payload)
+                repair["messages"].extend(
+                    [
+                        {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "sql": candidate.sql,
+                                    "chartRecommendation": candidate.chartRecommendation.model_dump(),
+                                }
+                            ),
+                        },
+                        {"role": "user", "content": diagnostic.diagnostic},
+                    ]
+                )
+                try:
+                    maximum = int(os.getenv("LLM_REQUEST_MAX_BYTES", "48000"))
+                except ValueError:
+                    raise Controlled("INSUFFICIENT_CONTEXT") from None
+                if len(json.dumps(repair, ensure_ascii=False).encode()) > maximum:
+                    raise Controlled("INSUFFICIENT_CONTEXT")
+                corrected = await checked(repair)
+                try:
+                    validate_aggregation(
+                        corrected.sql,
+                        request.sqlDialect,
+                        context,
+                        corrected.chartRecommendation.model_dump(),
+                        request.question,
+                    )
+                except Exception:
+                    raise Controlled("INVALID_MODEL_RESPONSE", 502) from None
+                return corrected
+            except Exception:
+                raise Controlled("INVALID_MODEL_RESPONSE", 502) from None
 
         async def admitted_generation() -> Candidate:
             async with inference_slot():
-                return await checked(payload)
+                return await generate_checked()
 
         try:
+            # Admission and both requests share one monotonic generation budget.
+            # The correction retains its original slot; this is never a retry loop.
             return await asyncio.wait_for(admitted_generation(), timeout=budget)
         except asyncio.TimeoutError:
             raise Controlled("PROVIDER_TIMEOUT", 504) from None
@@ -1119,3 +1217,86 @@ async def generate(
         raise Controlled("INVALID_REQUEST", 422)
     with provider_scope(data.modelConfig):
         return await generate_with_context(data, x_execution_mode)
+
+
+@app.post(
+    "/internal/v1/semantic-plan",
+    response_model=PlanResponse,
+    response_model_exclude_none=True,
+)
+async def semantic_plan(
+    req: Request,
+    authorization: str = Header(default=""),
+):
+    raw = await private_json(req, authorization)
+    try:
+        data = PlanRequest.model_validate(raw)
+    except ValidationError:
+        raise Controlled("INVALID_REQUEST", 422)
+    try:
+        return plan_sql(data)
+    except PlanningFailure as error:
+        raise Controlled(error.code, 422) from error
+
+
+class SemanticFilter(Strict):
+    dimension: str = Field(min_length=1, max_length=256)
+    operator: Literal["EQ", "NE", "GT", "GTE", "LT", "LTE", "CONTAINS", "IS_NULL", "IS_NOT_NULL"]
+    value: str | int | float | bool | None = None
+
+
+class SemanticSelection(Strict):
+    metrics: list[str] = Field(min_length=1, max_length=10)
+    dimensions: list[str] = Field(default_factory=list, max_length=5)
+    filters: list[SemanticFilter] = Field(default_factory=list, max_length=10)
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
+class BusinessInput(Strict):
+    correlationId: str = Field(min_length=1, max_length=100)
+    warehouseId: str = Field(min_length=1, max_length=200)
+    datasetId: str = Field(min_length=1, max_length=200)
+    sqlDialect: Dialect = Field(strict=False)
+    semanticContext: Context
+    selection: SemanticSelection | None = None
+
+
+@app.post("/internal/v1/business-{action}")
+async def business_action(action: str, req: Request, authorization: str = Header(default="")):
+    from wren.nla_business import BusinessCompiler
+    from wren.nla_planning import DatasetPlanningError
+
+    raw = await private_json(req, authorization)
+    try:
+        data = BusinessInput.model_validate(raw)
+        compiler = BusinessCompiler(
+            data.semanticContext.model_dump(by_alias=True), data.sqlDialect.value
+        )
+        if action == "validate":
+            return {
+                "valid": True,
+                "semanticVersion": data.semanticContext.semanticVersion,
+                "metricCount": len(data.semanticContext.metrics),
+                "dimensionCount": len(data.semanticContext.dimensions),
+                "diagnostics": [],
+            }
+        if action == "plan" and data.selection:
+            return compiler.compile(data.selection.model_dump())
+        raise Controlled("INVALID_REQUEST", 422)
+    except ValidationError:
+        raise Controlled("SEMANTIC_MODEL_INVALID", 422)
+    except (DatasetPlanningError, KeyError, TypeError, ValueError):
+        raise Controlled("SEMANTIC_MODEL_INVALID", 422) from None
+
+
+@app.post("/internal/v1/semantic-assist")
+async def semantic_assist(req: Request, authorization: str = Header(default="")):
+    from semantic_assist import AssistInput, propose
+
+    raw = await private_json(req, authorization)
+    try:
+        data = AssistInput.model_validate(raw)
+    except ValidationError:
+        raise Controlled("INVALID_REQUEST", 422) from None
+    with provider_scope(data.modelConfig):
+        return await propose(data)
