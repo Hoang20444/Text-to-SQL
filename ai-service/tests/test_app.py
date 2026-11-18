@@ -27,7 +27,7 @@ from app import (
 )
 from context_index import cached_snapshot_count, clear_schema_index_cache, get_schema_index
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "test-service-secret-token-with-minimum-32-characters"
 
 

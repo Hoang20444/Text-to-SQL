@@ -5,7 +5,7 @@ Nền tảng trợ lý phân tích dữ liệu đa kho (`PostgreSQL`, `MySQL`, `
 - **Tài liệu Kế hoạch & Product Backlog 8 Sprints**:
   - [Project_Agile_Backlog_8_Sprints.docx](docs/Project_Agile_Backlog_8_Sprints.docx)
   - [Project_Agile_Backlog_8_Sprints.xlsx](docs/Project_Agile_Backlog_8_Sprints.xlsx)
-- **Đặc tả Hợp đồng API chung (`v1.0` – Sprint 2)**: [docs/contracts/README.md](docs/contracts/README.md)
+- **Đặc tả Hợp đồng API chung (`v1.0` – Sprint 3)**: [docs/contracts/README.md](docs/contracts/README.md)
 
 ## Kiến trúc Tổng thể
 
@@ -20,9 +20,10 @@ React (frontend/) → Java Spring Boot (backend/) → Python AI Service (ai-serv
 - **AI Service (`ai-service/`)**:
   - **Sprint 1**: Xác thực nội bộ `PYTHON_AI_TOKEN`, schema nghiêm ngặt không nhận mật khẩu CSDL, sinh SQL mẫu chuẩn (`DETERMINISTIC`) trên 3 hệ CSDL.
   - **Sprint 2**: Thu gọn ngữ cảnh lược đồ vật lý & giữ đường nối `JOIN` ngắn nhất (`schema_relevance.py`, `SemanticContextSelector`), hậu kiểm câu lệnh SQL ứng viên cho 3 phương ngữ, kết nối bất đồng bộ với **Ollama cục bộ (`qwen3:4b`)** & **OpenAI-compatible API** (`model_provider.py`, `OpenAICompatibleModelClient`).
+  - **Sprint 3**: Lập kế hoạch ngữ nghĩa nội sinh bằng SDK `wren-core-py` / `wren-engine` (`semantic_planner.py`, `/internal/v1/semantic-plan`), biên dịch mô hình nghiệp vụ & kiểm tra quan hệ fan-out (`wren.nla_business.BusinessCompiler`, `/internal/v1/business-validate`, `/internal/v1/business-plan`), trợ lý nháp ngữ nghĩa (`semantic_assist.py`, `/internal/v1/semantic-assist`) và kiểm định phép tổng hợp + tự sửa có giới hạn (`candidate_validation.py`).
 - **Hạ tầng & Dữ liệu mẫu (`infra/`, `data/`)**: Docker Compose cho 3 hệ CSDL + Keycloak OIDC, nạp dữ liệu mẫu Chinook chỉ đọc `nla_reader` và tiện ích chuyển đổi hồ sơ `Ollama` / `Online` (`infra/local/ollama.py`).
 
-## Hướng dẫn Khởi chạy & Kiểm thử Nhanh (Sprint 1 & Sprint 2 — AI & Data)
+## Hướng dẫn Khởi chạy & Kiểm thử Nhanh (Sprint 1 – Sprint 3 — AI & Data)
 
 ### 1. Khởi tạo và nạp dữ liệu mẫu Chinook chỉ đọc trên 3 hệ CSDL
 
@@ -33,7 +34,7 @@ python data/scripts/docker_chinook.py status
 python data/scripts/docker_chinook.py provision
 ```
 
-### 2. Chạy toàn bộ bộ kiểm thử tự động Sprint 1 + Sprint 2
+### 2. Chạy toàn bộ bộ kiểm thử tự động Sprint 1 + Sprint 2 + Sprint 3
 
 ```bash
 python -m venv ai-service/.venv
@@ -41,6 +42,7 @@ ai-service/.venv/Scripts/pip install -r ai-service/requirements-dev.txt
 ai-service/.venv/Scripts/pytest ai-service infra/local/test_llm_profile.py -v
 ai-service/.venv/Scripts/python data/scripts/verify_sprint1_ai.py
 ai-service/.venv/Scripts/python data/scripts/verify_sprint2_ai.py
+ai-service/.venv/Scripts/python data/scripts/verify_sprint3_ai.py
 ```
 
 ### CI trên GitHub Actions
