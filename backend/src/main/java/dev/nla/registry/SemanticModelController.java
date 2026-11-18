@@ -34,12 +34,17 @@ public class SemanticModelController {
   private final Store store;
   private final CatalogService catalog;
   private final MetricExpressions metricExpressions;
+  private final RelationshipCardinality cardinality;
 
   public SemanticModelController(
-      Store store, CatalogService catalog, MetricExpressions metricExpressions) {
+      Store store,
+      CatalogService catalog,
+      MetricExpressions metricExpressions,
+      RelationshipCardinality cardinality) {
     this.store = store;
     this.catalog = catalog;
     this.metricExpressions = metricExpressions;
+    this.cardinality = cardinality;
   }
 
   /** Any user allowed to read the dataset sees the full context; access is checked by Store. */
@@ -160,13 +165,16 @@ public class SemanticModelController {
     model.put("schemaVersion", dataset.get("schemaVersion"));
     model.put("tables", List.of());
     catalog.validateSemantic(model, tables);
-    String engine = Json.str(store.warehouse(Json.str(dataset, "warehouseId")), "engine");
+    var warehouse = store.warehouse(Json.str(dataset, "warehouseId"));
+    String engine = Json.str(warehouse, "engine");
     metricExpressions.validate(engine, Json.objects(model.get("metrics")), tables);
     if (SemanticVersions.conflict(dataset.get("semanticVersion"), store.semantic(id), model))
       throw new ApiException(
           HttpStatus.CONFLICT,
           "SEMANTIC_MODEL_INVALID",
           "Định nghĩa đã thay đổi; hãy tăng semanticVersion trước khi lưu.");
+    // Data scans run last, only for a model that passed every metadata check.
+    cardinality.verify(warehouse, tables, Json.objects(model.get("relationships")));
     return new Checked(dataset, model);
   }
 }
