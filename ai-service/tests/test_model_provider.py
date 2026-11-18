@@ -7,11 +7,11 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from test_app import headers as fixture_headers
+from test_app import payload as fixture_payload
 
 from app import Input, app
 from model_provider import ModelConfig, provider_model, provider_scope, structured_output
-from test_app import headers as fixture_headers
-from test_app import payload as fixture_payload
 
 TOKEN = "model-configuration-private-service-token-at-least-32-characters"
 SECRET = "distinct-private-profile-key-do-not-echo"
