@@ -26,7 +26,7 @@ import org.springframework.stereotype.Component;
  * the relationship.
  */
 @Component
-class RelationshipCardinality {
+public class RelationshipCardinality {
   static final int MAX_SCANS = 8;
   static final long BUDGET_SECONDS = 5;
 
@@ -38,7 +38,7 @@ class RelationshipCardinality {
     this.adapters = adapters;
   }
 
-  void verify(
+  public void verify(
       Map<String, Object> warehouse,
       List<Map<String, Object>> tables,
       List<Map<String, Object>> relationships) {

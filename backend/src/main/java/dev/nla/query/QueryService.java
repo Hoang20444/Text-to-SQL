@@ -8,6 +8,7 @@ import dev.nla.common.Page;
 import dev.nla.common.Requests;
 import dev.nla.modelprovider.ModelProviderService;
 import dev.nla.registry.CatalogService;
+import dev.nla.registry.RelationshipCardinality;
 import dev.nla.store.Store;
 import dev.nla.warehouse.*;
 import dev.nla.warehouse.Adapters;
@@ -30,6 +31,7 @@ public class QueryService {
   private final AiClient ai;
   private final SqlGuard guard;
   private final ModelProviderService providers;
+  private final RelationshipCardinality cardinality;
 
   public QueryService(
       Store s,
@@ -37,13 +39,15 @@ public class QueryService {
       Adapters a,
       AiClient ai,
       SqlGuard guard,
-      ModelProviderService providers) {
+      ModelProviderService providers,
+      RelationshipCardinality cardinality) {
     store = s;
     catalog = c;
     adapters = a;
     this.ai = ai;
     this.guard = guard;
     this.providers = providers;
+    this.cardinality = cardinality;
   }
 
   public Map<String, Object> run(Map<String, Object> b) {
@@ -184,6 +188,9 @@ public class QueryService {
     var compiled =
         new SemanticCompiler(engine, adapters.get(w)::quoteIdentifier)
             .compile(context, metrics, dimensions, filters);
+    // Data may have changed since the model was saved: prove the "one" side of every join used
+    // here again (T-3.3.1), so a key that became duplicated cannot multiply the totals.
+    cardinality.verify(w, Json.objects(context.get("tables")), compiled.relationships());
     String question =
         "Chỉ số: "
             + String.join(", ", metrics)
