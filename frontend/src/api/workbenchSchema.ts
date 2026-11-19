@@ -6,24 +6,18 @@ import {
   EngineSchema,
   ErrorBodySchema,
   ExampleSchema,
-  MetadataColumnSchema,
   MetricSchema,
   RelationshipSchema,
+  TableSchema,
   TableRefSchema,
 } from "./schema";
+import { ProviderSnapshotSchema } from "./modelProviderSchema";
 
 const id = z.string().min(1);
 const count = z.number().int().nonnegative();
 const time = z.iso.datetime({ offset: true });
 export const SemanticDocumentSchema = z.object({
-  tables: z.array(
-    TableRefSchema.extend({
-      logicalName: z.string(),
-      description: z.string(),
-      grain: z.string(),
-      columns: z.array(MetadataColumnSchema),
-    }),
-  ),
+  tables: z.array(TableSchema),
   metrics: z.array(MetricSchema).max(200),
   dimensions: z.array(DimensionSchema).max(200),
   relationships: z.array(RelationshipSchema).max(500),
@@ -40,6 +34,7 @@ export const SemanticValidationSchema = z.object({
   semanticVersion: id,
   metricCount: count,
   dimensionCount: count,
+  relationshipCount: count.optional(),
   diagnostics: z.array(z.string()),
 });
 export const SemanticFilterSchema = z.strictObject({
@@ -207,10 +202,34 @@ export const QuestionSuggestionSchema = z.object({
 });
 export type QuestionSuggestion = z.infer<typeof QuestionSuggestionSchema>;
 export const SemanticAssistInputSchema = z.strictObject({
-  instruction: z.string().trim().min(1).max(2000),
+  instruction: z.string().trim().min(1).max(2000).optional(),
+  providerId: id.optional(),
+});
+const AssistStatusSchema = z.enum(["NEW", "CHANGED", "UNCHANGED", "INVALID"]);
+export const MetricAssistItemSchema = z.object({
+  status: AssistStatusSchema,
+  definition: MetricSchema,
+  current: MetricSchema.optional(),
+  reason: z.string().optional(),
+});
+export const DimensionAssistItemSchema = z.object({
+  status: AssistStatusSchema,
+  definition: DimensionSchema,
+  current: DimensionSchema.optional(),
+  reason: z.string().optional(),
+});
+export const BusinessRuleAssistItemSchema = z.object({
+  status: z.enum(["NEW", "UNCHANGED"]),
+  rule: z.string(),
 });
 export const SemanticAssistSchema = z.object({
+  datasetId: id,
   model: id,
-  semanticModel: SemanticDocumentSchema,
+  provider: ProviderSnapshotSchema,
+  baseSemanticVersion: id,
+  suggestedSemanticVersion: id,
+  metrics: z.array(MetricAssistItemSchema),
+  dimensions: z.array(DimensionAssistItemSchema),
+  businessRules: z.array(BusinessRuleAssistItemSchema),
   warnings: z.array(z.string()),
 });

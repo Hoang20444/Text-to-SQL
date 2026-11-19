@@ -1,8 +1,14 @@
 import { useState, type ComponentProps } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
+  ArrowRight,
   BarChart3,
   Braces,
   Clock3,
@@ -18,7 +24,7 @@ import { executionLabel, providerSourceLabel } from "../lib/modelProvider";
 import { queryApi } from "../api/queryApi";
 import { datasetApi } from "../api/datasetApi";
 import { warehouseApi } from "../api/warehouseApi";
-import { useWarehouse } from "../app/providers";
+import { useLocale, useWarehouse } from "../app/providers";
 import { useAuth } from "../app/auth";
 import { formatDate, formatDuration, engineLabel } from "../lib/format";
 import {
@@ -42,6 +48,11 @@ import { ResultTable } from "../components/ResultTable";
 import { Visualization, scalarColumn } from "../components/Visualization";
 import { loadChartSnapshot } from "../lib/chartSnapshot";
 import { PageHeading } from "../components/Shell";
+import {
+  composeFollowUpQuestion,
+  followUpQuestionLimit,
+  limitCodePoints,
+} from "../lib/followUp";
 export function ResultPage() {
   const { id = "", tab = "overview" } = useParams(),
     c = useWarehouse(),
@@ -50,7 +61,12 @@ export function ResultPage() {
     [saving, setSaving] = useState(false),
     [name, setName] = useState(""),
     [downloadError, setDownloadError] = useState<unknown>(null),
-    [exporting, setExporting] = useState(false);
+    [exporting, setExporting] = useState(false),
+    [followUp, setFollowUp] = useState(""),
+    [followUpError, setFollowUpError] = useState("");
+  const [searchParams] = useSearchParams();
+  const { t } = useLocale();
+  const parentQueryId = searchParams.get("from") ?? "";
   const query = useQuery({
     queryKey: ["query", id],
     queryFn: ({ signal }) => queryApi.get(id, signal),
@@ -66,6 +82,11 @@ export function ResultPage() {
     queryKey: ["query-source-dataset", query.data?.datasetId],
     queryFn: ({ signal }) => datasetApi.get(query.data!.datasetId, signal),
     enabled: c.enabled && Boolean(query.data?.datasetId),
+  });
+  const parentQuery = useQuery({
+    queryKey: ["query-follow-up-parent", parentQueryId],
+    queryFn: ({ signal }) => queryApi.get(parentQueryId, signal),
+    enabled: c.enabled && Boolean(parentQueryId) && parentQueryId !== id,
   });
   const save = useMutation({
     mutationFn: () => queryApi.save(id, name),
@@ -193,6 +214,108 @@ export function ResultPage() {
                 <strong>{formatDate(q.createdAt)}</strong>
               </div>
             </div>
+            {parentQueryId && parentQueryId !== id && (
+              <Card
+                title={t("Câu hỏi trước trong luồng tiếp nối")}
+                icon={<ArrowLeft size={19} />}
+              >
+                {parentQuery.isError ? (
+                  <ErrorState
+                    error={parentQuery.error}
+                    retry={() => void parentQuery.refetch()}
+                  />
+                ) : parentQuery.data ? (
+                  <p className="prose">
+                    <Link
+                      to={`/query/${encodeURIComponent(parentQueryId)}/overview`}
+                    >
+                      {parentQuery.data.question}
+                    </Link>
+                  </p>
+                ) : (
+                  <p className="muted">{t("Đang tải câu hỏi trước…")}</p>
+                )}
+              </Card>
+            )}
+            <Card
+              title={t("Đặt câu hỏi tiếp theo")}
+              icon={<HelpCircle size={20} />}
+            >
+              <form
+                className="follow-up-composer"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  setFollowUpError("");
+                  if (!auth.can("ANALYST")) {
+                    setFollowUpError(
+                      t("Bạn cần quyền ANALYST để tiếp tục truy vấn."),
+                    );
+                    return;
+                  }
+                  if (q.status !== "SUCCESS" || !q.result) {
+                    setFollowUpError(
+                      t("Chỉ có thể hỏi tiếp từ truy vấn đã chạy thành công."),
+                    );
+                    return;
+                  }
+                  if (!composeFollowUpQuestion(q.question, followUp)) {
+                    setFollowUpError(
+                      t(
+                        "Ngữ cảnh câu hỏi vượt giới hạn 1000 ký tự. Hãy rút gọn câu hỏi tiếp theo.",
+                      ),
+                    );
+                    return;
+                  }
+                  navigate(`/query?from=${encodeURIComponent(id)}`, {
+                    state: { question: followUp.trim() },
+                  });
+                }}
+              >
+                <Field
+                  label={t("Đặt câu hỏi tiếp theo từ ngữ cảnh này")}
+                  hint={t(
+                    "Model nhận câu hỏi trước và câu hỏi mới; các dòng kết quả không được tự động gửi lại.",
+                  )}
+                >
+                  <textarea
+                    rows={2}
+                    maxLength={followUpQuestionLimit(q.question) * 2}
+                    value={followUp}
+                    onChange={(event) =>
+                      setFollowUp(
+                        limitCodePoints(
+                          event.target.value,
+                          followUpQuestionLimit(q.question),
+                        ),
+                      )
+                    }
+                    placeholder={t(
+                      "Ví dụ: Chỉ hiển thị tháng 9 và nhóm theo khu vực",
+                    )}
+                    disabled={q.status !== "SUCCESS" || !q.result}
+                  />
+                </Field>
+                <div className="follow-up-footer">
+                  <small>
+                    {Array.from(followUp).length}/
+                    {followUpQuestionLimit(q.question)}
+                  </small>
+                  <Button
+                    variant="primary"
+                    disabled={
+                      !followUp.trim() ||
+                      !auth.can("ANALYST") ||
+                      q.status !== "SUCCESS" ||
+                      !q.result
+                    }
+                  >
+                    <ArrowRight size={16} />
+                    {t("Tiếp tục")}
+                  </Button>
+                </div>
+              </form>
+              {followUpError && <Notice tone="error">{followUpError}</Notice>}
+            </Card>
             {q.error && (
               <ErrorState
                 error={Object.assign(new Error(q.error.message), {

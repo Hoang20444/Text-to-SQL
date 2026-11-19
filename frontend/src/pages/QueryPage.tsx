@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -17,7 +17,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { useAuth } from "../app/auth";
-import { useWarehouse } from "../app/providers";
+import { useLocale, useWarehouse } from "../app/providers";
 import { catalogApi } from "../api/catalogApi";
 import { queryApi } from "../api/queryApi";
 import { modelProviderApi } from "../api/modelProviderApi";
@@ -29,6 +29,11 @@ import {
 import { settingsApi } from "../api/settingsApi";
 import { QueryRequestSchema, type Mode } from "../api/schema";
 import { engineLabel, formatDate } from "../lib/format";
+import {
+  composeFollowUpQuestion,
+  followUpQuestionLimit,
+  limitCodePoints,
+} from "../lib/followUp";
 import { Artwork } from "../components/Artwork";
 import { PageHeading } from "../components/Shell";
 import {
@@ -48,6 +53,9 @@ export function QueryPage() {
     auth = useAuth(),
     navigate = useNavigate(),
     location = useLocation();
+  const [searchParams] = useSearchParams();
+  const { t } = useLocale();
+  const parentQueryId = searchParams.get("from") ?? "";
   const [question, setQuestion] = useState(() =>
       typeof location.state?.question === "string"
         ? location.state.question
@@ -90,6 +98,24 @@ export function QueryPage() {
     queryFn: ({ signal }) => modelProviderApi.list(signal),
     enabled: c.enabled,
   });
+  const parentQuery = useQuery({
+    queryKey: ["query-follow-up-parent", parentQueryId],
+    queryFn: ({ signal }) => queryApi.get(parentQueryId, signal),
+    enabled: c.enabled && Boolean(parentQueryId),
+  });
+  const parentMatchesDataset = Boolean(
+    parentQuery.data &&
+    parentQuery.data.datasetId === c.datasetId &&
+    parentQuery.data.warehouseId === c.warehouseId,
+  );
+  const effectiveQuestion = parentQuery.data
+    ? parentMatchesDataset
+      ? composeFollowUpQuestion(parentQuery.data.question, question)
+      : null
+    : question;
+  const questionLimit = parentQuery.data
+    ? followUpQuestionLimit(parentQuery.data.question)
+    : 1000;
   const availableProviders =
     providers.data?.items.filter(
       (provider) => provider.enabled && provider.configured,
@@ -106,7 +132,7 @@ export function QueryPage() {
       const body = QueryRequestSchema.parse({
         warehouseId: c.warehouseId,
         datasetId: c.datasetId,
-        question,
+        question: effectiveQuestion,
         mode,
         ...(mode === "API" && providerId ? { providerId } : {}),
       });
@@ -115,7 +141,9 @@ export function QueryPage() {
     },
     onSuccess: (q) => {
       if (lastContext.current === `${q.warehouseId}/${q.datasetId}`)
-        navigate(`/query/${encodeURIComponent(q.queryId)}/overview`);
+        navigate(
+          `/query/${encodeURIComponent(q.queryId)}/overview${parentQueryId ? `?from=${encodeURIComponent(parentQueryId)}` : ""}`,
+        );
     },
   });
   useEffect(() => {
@@ -135,7 +163,7 @@ export function QueryPage() {
     const valid = QueryRequestSchema.safeParse({
       warehouseId: c.warehouseId,
       datasetId: c.datasetId,
-      question,
+      question: effectiveQuestion,
       mode,
       ...(mode === "API" && providerId ? { providerId } : {}),
     });
@@ -153,7 +181,8 @@ export function QueryPage() {
     c.warehouse?.status === "ACTIVE" &&
     c.dataset?.status === "ACTIVE" &&
     auth.can("ANALYST") &&
-    providerReady;
+    providerReady &&
+    (!parentQueryId || (parentMatchesDataset && !parentQuery.isPending));
   return (
     <>
       <PageHeading
@@ -166,6 +195,12 @@ export function QueryPage() {
         art={<Artwork />}
       />
       {c.error && <ErrorState error={c.error} retry={c.reload} />}
+      {parentQuery.isError && (
+        <ErrorState
+          error={parentQuery.error}
+          retry={() => void parentQuery.refetch()}
+        />
+      )}
       <div className="workspace-grid">
         <div className="stack">
           <Card
@@ -178,6 +213,31 @@ export function QueryPage() {
               </Button>
             }
           >
+            {parentQueryId && (
+              <Notice
+                tone={
+                  parentQuery.data && !parentMatchesDataset ? "warning" : "info"
+                }
+              >
+                {parentQuery.data && parentMatchesDataset ? (
+                  <>
+                    <strong>{t("Câu hỏi tiếp nối")}</strong>
+                    <p>{parentQuery.data.question}</p>
+                    <small>
+                      {t(
+                        "Chỉ câu hỏi trước được gửi làm ngữ cảnh; các dòng kết quả trước không được gửi lại cho model.",
+                      )}
+                    </small>
+                  </>
+                ) : parentQuery.data ? (
+                  t(
+                    "Truy vấn gốc thuộc dataset hoặc warehouse khác. Hãy chọn đúng nguồn trước khi tiếp tục.",
+                  )
+                ) : (
+                  t("Đang tải câu hỏi trước để tạo ngữ cảnh tiếp nối…")
+                )}
+              </Notice>
+            )}
             {guide && (
               <Notice>
                 Nêu rõ chỉ số, chiều phân tích, khoảng thời gian và bộ lọc.
@@ -195,8 +255,10 @@ export function QueryPage() {
                   ref={input}
                   aria-label="Câu hỏi phân tích"
                   value={question}
-                  maxLength={2000}
-                  onChange={(e) => setQuestion(e.target.value)}
+                  maxLength={questionLimit * 2}
+                  onChange={(e) =>
+                    setQuestion(limitCodePoints(e.target.value, questionLimit))
+                  }
                   placeholder={
                     "Bạn muốn tìm hiểu điều gì từ dataset đã chọn?\nNhập câu hỏi bằng tiếng Việt hoặc tiếng Anh…"
                   }
@@ -215,10 +277,12 @@ export function QueryPage() {
                 />
                 <span
                   className={
-                    Array.from(question).length > 1000 ? "text-danger" : ""
+                    Array.from(question).length > questionLimit
+                      ? "text-danger"
+                      : ""
                   }
                 >
-                  {Array.from(question).length}/1000
+                  {Array.from(question).length}/{questionLimit}
                 </span>
               </div>
               <div className="query-actions">

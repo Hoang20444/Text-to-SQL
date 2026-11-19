@@ -7,6 +7,7 @@ import {
   Database,
   Home,
   Settings,
+  GitBranch,
   Globe2,
   Bell,
   Menu,
@@ -31,6 +32,12 @@ export const navigation = [
   { to: "/query", label: "Truy vấn", icon: MessageCircle },
   { to: "/evaluation", label: "Đánh giá", icon: BarChart3 },
   { to: "/monitoring", label: "Giám sát", icon: Activity },
+  {
+    to: "/semantic",
+    label: "Ngữ nghĩa nghiệp vụ",
+    icon: GitBranch,
+    role: "ADMIN" as const,
+  },
   { to: "/settings", label: "Cài đặt", icon: Settings },
 ];
 export function Shell() {
@@ -62,7 +69,10 @@ export function Shell() {
     enabled: notifications && c.enabled,
     staleTime: 30_000,
   });
-  const current = navigation.find((n) =>
+  const visibleNavigation = navigation.filter(
+    (item) => !item.role || auth.can(item.role),
+  );
+  const current = visibleNavigation.find((n) =>
     n.to === "/"
       ? location.pathname === "/"
       : location.pathname.startsWith(n.to),
@@ -185,7 +195,7 @@ export function Shell() {
           <X size={20} />
         </Button>
         <nav>
-          {navigation.map(({ to, label, icon: Icon }) => (
+          {visibleNavigation.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}

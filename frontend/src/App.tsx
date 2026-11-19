@@ -31,6 +31,11 @@ const Query = lazy(() =>
   Settings = lazy(() =>
     import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
   );
+const SemanticWorkbench = lazy(() =>
+  import("./pages/SemanticWorkbenchPage").then((m) => ({
+    default: m.SemanticWorkbenchPage,
+  })),
+);
 export const client = new QueryClient({ defaultOptions: queryClientDefaults });
 export function AppRoutes() {
   return (
@@ -46,6 +51,7 @@ export function AppRoutes() {
           <Route path="evaluation/results/:resultId" element={<Evaluation />} />
           <Route path="monitoring" element={<Monitoring />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="semantic" element={<SemanticWorkbench />} />
           <Route
             path="auth/silent-callback"
             element={<Loading label="Đang làm mới phiên đăng nhập…" />}
