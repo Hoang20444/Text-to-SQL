@@ -19,6 +19,13 @@ public final class FakeAi {
   public final AtomicReference<String> lastRequest = new AtomicReference<>();
   public final AtomicReference<String> lastMode = new AtomicReference<>();
   public final AtomicReference<String> lastAuth = new AtomicReference<>();
+  // semantic-assist (T-3.2.2) answers separately from text-to-sql.
+  public final AtomicReference<Integer> assistStatus = new AtomicReference<>(200);
+  public final AtomicReference<String> assistBody = new AtomicReference<>("{}");
+  public final AtomicReference<String> lastAssistRequest = new AtomicReference<>();
+  // Answer of /model-provider/status; null provider means the AI service has no model configured.
+  public final AtomicReference<String> providerStatus =
+      new AtomicReference<>("{\"provider\":null}");
   private final HttpServer server;
 
   public FakeAi() {
@@ -41,10 +48,21 @@ public final class FakeAi {
           exchange.close();
         });
     server.createContext(
+        "/internal/v1/semantic-assist",
+        exchange -> {
+          lastAssistRequest.set(
+              new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+          byte[] bytes = assistBody.get().getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(assistStatus.get(), bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.close();
+        });
+    server.createContext(
         "/internal/v1/model-provider/status",
         exchange -> {
           exchange.getRequestBody().readAllBytes();
-          byte[] bytes = "{\"provider\":null}".getBytes(StandardCharsets.UTF_8);
+          byte[] bytes = providerStatus.get().getBytes(StandardCharsets.UTF_8);
           exchange.getResponseHeaders().add("Content-Type", "application/json");
           exchange.sendResponseHeaders(200, bytes.length);
           exchange.getResponseBody().write(bytes);
