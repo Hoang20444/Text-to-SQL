@@ -36,16 +36,19 @@ public class SemanticModelController {
   private final CatalogService catalog;
   private final MetricExpressions metricExpressions;
   private final RelationshipCardinality cardinality;
+  private final ExampleQueries exampleQueries;
 
   public SemanticModelController(
       Store store,
       CatalogService catalog,
       MetricExpressions metricExpressions,
-      RelationshipCardinality cardinality) {
+      RelationshipCardinality cardinality,
+      ExampleQueries exampleQueries) {
     this.store = store;
     this.catalog = catalog;
     this.metricExpressions = metricExpressions;
     this.cardinality = cardinality;
+    this.exampleQueries = exampleQueries;
   }
 
   /** Any user allowed to read the dataset sees the full context; access is checked by Store. */
@@ -212,6 +215,7 @@ public class SemanticModelController {
     String engine = Json.str(warehouse, "engine");
     metricExpressions.validate(engine, Json.objects(model.get("metrics")), tables);
     checkCompatibleDimensions(engine, model, tables);
+    exampleQueries.validate(engine, model, tables);
     if (SemanticVersions.conflict(dataset.get("semanticVersion"), store.semantic(id), model))
       throw new ApiException(
           HttpStatus.CONFLICT,
