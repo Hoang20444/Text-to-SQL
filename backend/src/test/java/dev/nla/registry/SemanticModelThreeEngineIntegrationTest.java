@@ -137,6 +137,30 @@ class SemanticModelThreeEngineIntegrationTest {
             + " ('VN', 'Asia'), ('VN', 'Southeast Asia'), ('US', 'America')");
     s.execute("CREATE TABLE shop.country_code (country varchar(60) NOT NULL, iso varchar(3))");
     s.execute("INSERT INTO shop.country_code (country, iso) VALUES ('VN', 'VNM'), ('US', 'USA')");
+    // Unique when the model is saved; one test adds a duplicate afterwards and removes it again.
+    s.execute("CREATE TABLE shop.country_alias (country varchar(60) NOT NULL, alias varchar(20))");
+    s.execute(
+        "INSERT INTO shop.country_alias (country, alias) VALUES ('VN', 'Viet Nam'), ('US', 'USA')");
+  }
+
+  /** Runs one statement directly on the warehouse, outside the application. */
+  private static void executeOn(String engine, String sql) throws Exception {
+    var connection =
+        switch (engine) {
+          case "POSTGRESQL" ->
+              DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
+          case "MYSQL" ->
+              DriverManager.getConnection(mysql.getJdbcUrl(), "root", mysql.getPassword());
+          default ->
+              DriverManager.getConnection(
+                  mssql.getJdbcUrl() + ";databaseName=shopdb",
+                  mssql.getUsername(),
+                  mssql.getPassword());
+        };
+    try (connection;
+        Statement s = connection.createStatement()) {
+      s.execute(sql);
+    }
   }
 
   private static Map<String, Object> connection(String engine) {
@@ -557,5 +581,47 @@ class SemanticModelThreeEngineIntegrationTest {
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.error.code").value("SEMANTIC_MODEL_INVALID"))
         .andExpect(jsonPath("$.error.details.path").value("metrics[0].compatibleDimensions"));
+  }
+
+  /**
+   * A key that was unique when the model was saved but later got a duplicate must stop the semantic
+   * query instead of silently doubling revenue (T-3.3.1, re-check at query time).
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void keyThatBecameDuplicatedStopsTheQuery(String engine) throws Exception {
+    String dataset = registerDataset(engine, List.of("customer", "orders", "country_alias"));
+    String url = "/api/v1/datasets/" + dataset + "/semantic-model";
+    var model =
+        lookupModel(
+            url,
+            "country_alias",
+            "alias",
+            Json.obj(
+                "from",
+                endpoint("customer", "country"),
+                "to",
+                endpoint("country_alias", "country"),
+                "cardinality",
+                "MANY_TO_ONE"));
+    as(TestJwt.admin(), put(url), model).andExpect(status().isOk());
+    String query = "/api/v1/datasets/" + dataset + "/semantic-query";
+    var byAlias = Json.obj("metrics", List.of("revenue"), "dimensions", List.of("alias"));
+    as(TestJwt.analyst(), post(query), byAlias)
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.result.rows.length()").value(2));
+
+    executeOn(engine, "INSERT INTO shop.country_alias (country, alias) VALUES ('VN', 'Vietnam')");
+    try {
+      as(TestJwt.analyst(), post(query), byAlias)
+          .andExpect(status().isConflict())
+          .andExpect(jsonPath("$.error.code").value("SEMANTIC_MODEL_INVALID"));
+      // A query that does not join through that table still runs.
+      as(TestJwt.analyst(), post(query), Json.obj("metrics", List.of("revenue")))
+          .andExpect(status().isCreated())
+          .andExpect(jsonPath("$.status").value("SUCCESS"));
+    } finally {
+      executeOn(engine, "DELETE FROM shop.country_alias WHERE alias = 'Vietnam'");
+    }
   }
 }
