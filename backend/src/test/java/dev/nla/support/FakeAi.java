@@ -84,6 +84,39 @@ public final class FakeAi {
     body.set(candidate(sql));
   }
 
+  /** Makes the AI service report a configured local Ollama model, like a real deployment. */
+  public void useEnvironmentProvider() {
+    providerStatus.set(
+        Json.write(
+            Json.obj(
+                "provider",
+                Json.obj(
+                    "providerId",
+                    "environment",
+                    "revision",
+                    "env-1",
+                    "name",
+                    "Ollama local",
+                    "kind",
+                    "OLLAMA",
+                    "baseUrl",
+                    "http://127.0.0.1:11434/v1",
+                    "model",
+                    "qwen2.5-coder:7b",
+                    "hasApiKey",
+                    false,
+                    "enabled",
+                    true,
+                    "configured",
+                    true,
+                    "source",
+                    "ENVIRONMENT",
+                    "readOnly",
+                    true,
+                    "updatedAt",
+                    "2026-11-19T00:00:00Z"))));
+  }
+
   public static String candidate(String sql) {
     return Json.write(
         Json.obj(

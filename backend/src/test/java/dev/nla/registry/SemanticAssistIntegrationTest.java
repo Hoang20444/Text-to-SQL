@@ -93,35 +93,7 @@ class SemanticAssistIntegrationTest {
   @BeforeEach
   void registerDataset() throws Exception {
     // The AI service reports a configured environment model, like a real deployment.
-    AI.providerStatus.set(
-        Json.write(
-            Json.obj(
-                "provider",
-                Json.obj(
-                    "providerId",
-                    "environment",
-                    "revision",
-                    "env-1",
-                    "name",
-                    "Ollama local",
-                    "kind",
-                    "OLLAMA",
-                    "baseUrl",
-                    "http://127.0.0.1:11434/v1",
-                    "model",
-                    "qwen2.5-coder:7b",
-                    "hasApiKey",
-                    false,
-                    "enabled",
-                    true,
-                    "configured",
-                    true,
-                    "source",
-                    "ENVIRONMENT",
-                    "readOnly",
-                    true,
-                    "updatedAt",
-                    "2026-11-19T00:00:00Z"))));
+    AI.useEnvironmentProvider();
     var warehouse =
         json(
             as(
