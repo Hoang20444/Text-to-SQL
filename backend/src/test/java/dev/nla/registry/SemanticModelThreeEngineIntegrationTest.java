@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import dev.nla.common.Json;
+import dev.nla.support.FakeAi;
 import dev.nla.support.TestJwt;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -15,6 +16,7 @@ import java.sql.Statement;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -50,7 +52,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
       "nla.warehouse-tls=false",
       "OIDC_ISSUER_URI=" + TestJwt.ISSUER,
       "OIDC_AUDIENCE=" + TestJwt.AUDIENCE,
-      "NLA_MYSQL_RSA_PUBLIC_KEY="
+      "NLA_MYSQL_RSA_PUBLIC_KEY=",
+      "PYTHON_AI_TOKEN=" + FakeAi.TOKEN
     })
 @AutoConfigureMockMvc
 @Testcontainers
@@ -72,6 +75,15 @@ class SemanticModelThreeEngineIntegrationTest {
     registry.add("TEST_PG_PASSWORD", pg::getPassword);
     registry.add("TEST_MYSQL_PASSWORD", mysql::getPassword);
     registry.add("TEST_MSSQL_PASSWORD", mssql::getPassword);
+    registry.add("PYTHON_AI_URL", AI::url);
+  }
+
+  /** Fake AI service for semantic-assist; Java still checks every draft against live tables. */
+  static final FakeAi AI = new FakeAi();
+
+  @AfterAll
+  static void stopAi() {
+    AI.stop();
   }
 
   @Autowired MockMvc mvc;
@@ -623,5 +635,93 @@ class SemanticModelThreeEngineIntegrationTest {
     } finally {
       executeOn(engine, "DELETE FROM shop.country_alias WHERE alias = 'Vietnam'");
     }
+  }
+
+  /**
+   * T-3.2.2 on every engine (DoD 3): the dialect sent to the AI matches the warehouse, a draft with
+   * real columns is NEW, a made-up column is INVALID, and nothing is saved.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void semanticAssistChecksDraftsOnEveryEngine(String engine) throws Exception {
+    String dataset = registerDataset(engine);
+    AI.useEnvironmentProvider();
+    AI.assistStatus.set(200);
+    AI.assistBody.set(
+        Json.write(
+            Json.obj(
+                "model",
+                "qwen2.5-coder:7b",
+                "metrics",
+                List.of(
+                    Json.obj(
+                        "name",
+                        "revenue",
+                        "description",
+                        "Tổng doanh thu",
+                        "expression",
+                        "SUM(orders.total)",
+                        "unit",
+                        "",
+                        "tableRefs",
+                        List.of(Json.obj("schema", "shop", "name", "orders")),
+                        "compatibleDimensions",
+                        List.of("country"),
+                        "synonyms",
+                        List.of()),
+                    Json.obj(
+                        "name",
+                        "profit",
+                        "description",
+                        "Lợi nhuận",
+                        "expression",
+                        "SUM(orders.profit)",
+                        "unit",
+                        "",
+                        "tableRefs",
+                        List.of(Json.obj("schema", "shop", "name", "orders")),
+                        "compatibleDimensions",
+                        List.of(),
+                        "synonyms",
+                        List.of())),
+                "dimensions",
+                List.of(
+                    Json.obj(
+                        "name",
+                        "country",
+                        "description",
+                        "Quốc gia",
+                        "table",
+                        Json.obj("schema", "shop", "name", "customer"),
+                        "column",
+                        "country",
+                        "dataType",
+                        "VARCHAR",
+                        "synonyms",
+                        List.of())),
+                "businessRules",
+                List.of(),
+                "warnings",
+                List.of())));
+
+    var preview =
+        json(
+            as(
+                    TestJwt.admin(),
+                    post("/api/v1/datasets/" + dataset + "/semantic-assist"),
+                    Json.obj())
+                .andExpect(status().isOk()));
+
+    assertThat(Json.read(AI.lastAssistRequest.get()).get("sqlDialect")).isEqualTo(engine);
+    assertThat(Json.objects(preview.get("metrics")))
+        .as(engine)
+        .extracting(m -> m.get("status"))
+        .containsExactly("NEW", "INVALID");
+    assertThat(Json.objects(preview.get("dimensions")))
+        .as(engine)
+        .extracting(d -> d.get("status"))
+        .containsExactly("NEW");
+    as(TestJwt.admin(), get("/api/v1/datasets/" + dataset + "/semantic-model"), null)
+        .andExpect(jsonPath("$.metrics").isEmpty());
   }
 }
