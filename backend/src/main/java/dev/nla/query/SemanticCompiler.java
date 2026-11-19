@@ -34,7 +34,15 @@ import org.springframework.http.HttpStatus;
  */
 public final class SemanticCompiler {
   /** Compiled statement plus the names it selected, in output column order. */
-  public record Compiled(String sql, List<String> metrics, List<String> dimensions) {}
+  /**
+   * Compiled statement, the names it selected in output column order, and the relationships used to
+   * join, so the caller can prove their "one" side on current data before running it.
+   */
+  public record Compiled(
+      String sql,
+      List<String> metrics,
+      List<String> dimensions,
+      List<Map<String, Object>> relationships) {}
 
   private final String engine;
   private final UnaryOperator<String> quote;
@@ -92,6 +100,7 @@ public final class SemanticCompiler {
     // Join path from the base table to each dimension table, many-to-one edges only.
     var edges = safeEdges(Json.objects(context.get("relationships")));
     var joins = new LinkedHashMap<String, String>();
+    var usedRelations = new LinkedHashMap<String, Map<String, Object>>();
     for (var dimension : used) {
       String target = key(Json.map(dimension.get("table")));
       if (target.equals(base)) continue;
@@ -101,7 +110,10 @@ public final class SemanticCompiler {
             "Không có đường nối an toàn (nhiều-một) từ bảng của metric tới dimension '"
                 + Json.str(dimension, "name")
                 + "'; nối theo chiều này có thể nhân bản số liệu.");
-      for (var edge : path) joins.putIfAbsent(edge.to(), edge.condition());
+      for (var edge : path) {
+        joins.putIfAbsent(edge.to(), edge.condition());
+        usedRelations.putIfAbsent(edge.condition(), edge.relation());
+      }
     }
 
     var aliases = new HashMap<String, String>();
@@ -143,7 +155,8 @@ public final class SemanticCompiler {
     return new Compiled(
         sql.toString(),
         metrics.stream().map(m -> Json.str(m, "name")).toList(),
-        dimensions.stream().map(d -> Json.str(d, "name")).toList());
+        dimensions.stream().map(d -> Json.str(d, "name")).toList(),
+        List.copyOf(usedRelations.values()));
   }
 
   private String column(Map<String, Object> dimension, Map<String, String> aliases) {
@@ -233,7 +246,7 @@ public final class SemanticCompiler {
   }
 
   /** A join step: from the many side to the one side, with an ON condition on table keys. */
-  private record Edge(String from, String to, String condition) {}
+  private record Edge(String from, String to, String condition, Map<String, Object> relation) {}
 
   private static Map<String, List<Edge>> safeEdges(List<Map<String, Object>> relationships) {
     var edges = new HashMap<String, List<Edge>>();
@@ -245,11 +258,11 @@ public final class SemanticCompiler {
       String condition =
           fromTable + "|" + Json.str(from, "column") + "|" + toTable + "|" + Json.str(to, "column");
       switch (Json.str(relation, "cardinality")) {
-        case "MANY_TO_ONE" -> add(edges, new Edge(fromTable, toTable, condition));
-        case "ONE_TO_MANY" -> add(edges, new Edge(toTable, fromTable, condition));
+        case "MANY_TO_ONE" -> add(edges, new Edge(fromTable, toTable, condition, relation));
+        case "ONE_TO_MANY" -> add(edges, new Edge(toTable, fromTable, condition, relation));
         case "ONE_TO_ONE" -> {
-          add(edges, new Edge(fromTable, toTable, condition));
-          add(edges, new Edge(toTable, fromTable, condition));
+          add(edges, new Edge(fromTable, toTable, condition, relation));
+          add(edges, new Edge(toTable, fromTable, condition, relation));
         }
         default -> {
           // MANY_TO_MANY would repeat base rows; never used for a join path.

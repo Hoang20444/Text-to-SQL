@@ -19,6 +19,13 @@ public final class FakeAi {
   public final AtomicReference<String> lastRequest = new AtomicReference<>();
   public final AtomicReference<String> lastMode = new AtomicReference<>();
   public final AtomicReference<String> lastAuth = new AtomicReference<>();
+  // semantic-assist (T-3.2.2) answers separately from text-to-sql.
+  public final AtomicReference<Integer> assistStatus = new AtomicReference<>(200);
+  public final AtomicReference<String> assistBody = new AtomicReference<>("{}");
+  public final AtomicReference<String> lastAssistRequest = new AtomicReference<>();
+  // Answer of /model-provider/status; null provider means the AI service has no model configured.
+  public final AtomicReference<String> providerStatus =
+      new AtomicReference<>("{\"provider\":null}");
   private final HttpServer server;
 
   public FakeAi() {
@@ -41,10 +48,21 @@ public final class FakeAi {
           exchange.close();
         });
     server.createContext(
+        "/internal/v1/semantic-assist",
+        exchange -> {
+          lastAssistRequest.set(
+              new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+          byte[] bytes = assistBody.get().getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(assistStatus.get(), bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.close();
+        });
+    server.createContext(
         "/internal/v1/model-provider/status",
         exchange -> {
           exchange.getRequestBody().readAllBytes();
-          byte[] bytes = "{\"provider\":null}".getBytes(StandardCharsets.UTF_8);
+          byte[] bytes = providerStatus.get().getBytes(StandardCharsets.UTF_8);
           exchange.getResponseHeaders().add("Content-Type", "application/json");
           exchange.sendResponseHeaders(200, bytes.length);
           exchange.getResponseBody().write(bytes);
@@ -64,6 +82,39 @@ public final class FakeAi {
   public void answer(String sql) {
     status.set(200);
     body.set(candidate(sql));
+  }
+
+  /** Makes the AI service report a configured local Ollama model, like a real deployment. */
+  public void useEnvironmentProvider() {
+    providerStatus.set(
+        Json.write(
+            Json.obj(
+                "provider",
+                Json.obj(
+                    "providerId",
+                    "environment",
+                    "revision",
+                    "env-1",
+                    "name",
+                    "Ollama local",
+                    "kind",
+                    "OLLAMA",
+                    "baseUrl",
+                    "http://127.0.0.1:11434/v1",
+                    "model",
+                    "qwen2.5-coder:7b",
+                    "hasApiKey",
+                    false,
+                    "enabled",
+                    true,
+                    "configured",
+                    true,
+                    "source",
+                    "ENVIRONMENT",
+                    "readOnly",
+                    true,
+                    "updatedAt",
+                    "2026-11-19T00:00:00Z"))));
   }
 
   public static String candidate(String sql) {

@@ -69,6 +69,83 @@ public class AiClient {
     }
   }
 
+  /**
+   * Asks the AI service for a semantic draft (T-3.2.2). The draft is untrusted: the caller checks
+   * every definition again. Provider problems map to controlled errors; the manual semantic editor
+   * keeps working whatever happens here.
+   */
+  public Map<String, Object> semanticAssist(Map<String, Object> request) {
+    String base = env.getProperty("PYTHON_AI_URL", "");
+    String token = env.getProperty("PYTHON_AI_TOKEN", "");
+    if (base.isBlank() || token.length() < 32)
+      throw new ApiException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PROVIDER_UNAVAILABLE",
+          "Dịch vụ AI chưa được cấu hình; vẫn có thể tạo định nghĩa thủ công.");
+    HttpResponse<String> response;
+    try {
+      URI uri = URI.create(base + "/internal/v1/semantic-assist");
+      if (!Set.of("http", "https").contains(uri.getScheme()) || uri.getUserInfo() != null)
+        throw new IllegalArgumentException();
+      response =
+          http.send(
+              HttpRequest.newBuilder(uri)
+                  .timeout(Duration.ofSeconds(120))
+                  .header("Content-Type", "application/json")
+                  .header("Authorization", "Bearer " + token)
+                  .header("X-Correlation-ID", Json.str(request, "correlationId"))
+                  .POST(HttpRequest.BodyPublishers.ofString(Json.write(request)))
+                  .build(),
+              HttpResponse.BodyHandlers.ofString());
+    } catch (java.net.http.HttpTimeoutException e) {
+      throw assistTimeout();
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw assistTimeout();
+    } catch (Exception e) {
+      throw new ApiException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PROVIDER_UNAVAILABLE",
+          "Không kết nối được dịch vụ AI; vẫn có thể tạo định nghĩa thủ công.");
+    }
+    if (response.body().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1048576)
+      throw invalidDraft();
+    Map<String, Object> body;
+    try {
+      body = Json.read(response.body());
+    } catch (Exception e) {
+      throw invalidDraft();
+    }
+    if (response.statusCode() == 200) return body;
+    String reason = Json.str(Json.map(body.get("error")), "code");
+    if (response.statusCode() == 504 || reason.equals("PROVIDER_TIMEOUT")) throw assistTimeout();
+    if (reason.equals("PROVIDER_UNAVAILABLE") || reason.equals("RATE_LIMITED"))
+      throw new ApiException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PROVIDER_UNAVAILABLE",
+          "Model AI đang bận hoặc không kết nối được; vẫn có thể tạo định nghĩa thủ công.");
+    if (reason.equals("INSUFFICIENT_CONTEXT"))
+      throw new ApiException(
+          HttpStatus.UNPROCESSABLE_ENTITY,
+          "INSUFFICIENT_CONTEXT",
+          "Cấu trúc bảng quá lớn hoặc thiếu để AI gợi ý; hãy thu hẹp dataset.");
+    throw invalidDraft();
+  }
+
+  private static ApiException assistTimeout() {
+    return new ApiException(
+        HttpStatus.GATEWAY_TIMEOUT,
+        "PROVIDER_TIMEOUT",
+        "Model AI không trả lời kịp; vẫn có thể tạo định nghĩa thủ công.");
+  }
+
+  private static ApiException invalidDraft() {
+    return new ApiException(
+        HttpStatus.BAD_GATEWAY,
+        "INVALID_MODEL_RESPONSE",
+        "Model trả về bản nháp không hợp lệ; hãy thử lại hoặc tạo định nghĩa thủ công.");
+  }
+
   static void validateCandidate(Map<String, Object> body) {
     Set<String> fields =
         Set.of(
