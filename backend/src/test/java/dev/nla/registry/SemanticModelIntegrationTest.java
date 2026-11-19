@@ -289,6 +289,59 @@ class SemanticModelIntegrationTest {
         .andExpect(status().isForbidden());
   }
 
+  private static Map<String, Object> example(String dialect, String sql, String metric) {
+    return Json.obj(
+        "question",
+        "Doanh thu theo quốc gia?",
+        "sqlDialect",
+        dialect,
+        "sql",
+        sql,
+        "selectedMetrics",
+        List.of(metric),
+        "selectedDimensions",
+        List.of("country"));
+  }
+
+  @Test
+  void sqlExamplesAreCheckedBeforeSaving() throws Exception {
+    String good =
+        "SELECT c.country, SUM(o.total) AS revenue FROM shop.orders o"
+            + " JOIN shop.customer c ON c.customer_id = o.customer_id GROUP BY c.country";
+
+    var wrongDialect = modelWithRevenue("1.0.0", "SUM(total)");
+    wrongDialect.put("examples", List.of(example("MYSQL", good, "revenue")));
+    as(TestJwt.admin(), put(url()), wrongDialect)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.details.path").value("examples[0].sqlDialect"));
+
+    var unsafe = modelWithRevenue("1.0.0", "SUM(total)");
+    unsafe.put("examples", List.of(example("POSTGRESQL", "DELETE FROM shop.orders", "revenue")));
+    as(TestJwt.admin(), put(url()), unsafe)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.details.path").value("examples[0].sql"));
+
+    var unknownColumn = modelWithRevenue("1.0.0", "SUM(total)");
+    unknownColumn.put(
+        "examples",
+        List.of(example("POSTGRESQL", "SELECT SUM(amount) FROM shop.orders", "revenue")));
+    as(TestJwt.admin(), put(url()), unknownColumn)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.details.path").value("examples[0].sql"));
+
+    var unknownMetric = modelWithRevenue("1.0.0", "SUM(total)");
+    unknownMetric.put("examples", List.of(example("POSTGRESQL", good, "profit")));
+    as(TestJwt.admin(), put(url()), unknownMetric)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error.details.path").value("examples[0].selectedMetrics"));
+
+    var valid = modelWithRevenue("1.0.0", "SUM(total)");
+    valid.put("examples", List.of(example("POSTGRESQL", good, "revenue")));
+    as(TestJwt.admin(), put(url()), valid)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.examples.length()").value(1));
+  }
+
   @Test
   void duplicateNamesAreRejected() throws Exception {
     var model = modelWithRevenue("1.0.0", "SUM(total)");
