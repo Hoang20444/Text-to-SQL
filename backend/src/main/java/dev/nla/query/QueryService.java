@@ -76,7 +76,26 @@ public class QueryService {
           HttpStatus.CONFLICT, "DATASET_UNAVAILABLE", "Warehouse hoặc dataset không hoạt động.");
     var previous =
         b.containsKey("followUpQueryId") ? followUpParent(b.get("followUpQueryId"), d) : null;
-    return execute(w, d, question, mode, Json.str(b, "providerId"));
+    return execute(w, d, question, mode, Json.str(b, "providerId"), previous);
+  }
+
+  /**
+   * What the model needs to resolve a short follow-up: the previous question, its final validated
+   * SQL (which already carries the context of the whole chain), explanation and selections. Result
+   * rows are never sent.
+   */
+  static Map<String, Object> previousTurn(Map<String, Object> parent) {
+    return Json.obj(
+        "question",
+        parent.get("question"),
+        "sql",
+        parent.get("generatedSql"),
+        "explanation",
+        parent.get("explanation"),
+        "selectedMetrics",
+        Objects.requireNonNullElse(parent.get("selectedMetrics"), List.of()),
+        "selectedDimensions",
+        Objects.requireNonNullElse(parent.get("selectedDimensions"), List.of()));
   }
 
   /**
@@ -100,9 +119,11 @@ public class QueryService {
       Map<String, Object> d,
       String question,
       String mode,
-      String providerId) {
+      String providerId,
+      Map<String, Object> previous) {
     long start = System.nanoTime();
     var q = newQuery(w, d, question, mode.equals("DETERMINISTIC") ? "DETERMINISTIC" : "API");
+    if (previous != null) q.put("followUpQueryId", previous.get("queryId"));
     store.putQuery(q);
     QueryDeadline.start();
     try {
@@ -121,6 +142,7 @@ public class QueryService {
               question,
               "semanticContext",
               context);
+      if (previous != null) request.put("previousTurn", previousTurn(previous));
       if (!"DETERMINISTIC".equals(mode)) {
         // The chosen profile's config (with its decrypted key) goes only to the private
         // AI call;
@@ -326,6 +348,8 @@ public class QueryService {
         null,
         "sqlDialect",
         w.get("engine"),
+        "followUpQueryId",
+        null,
         "explanation",
         null,
         "assumptions",
@@ -479,6 +503,8 @@ public class QueryService {
   public Map<String, Object> publicQuery(Map<String, Object> stored) {
     var q = new LinkedHashMap<>(stored);
     q.remove("owner");
+    // History written before T-4.2.2 has no link; it is not a follow-up.
+    q.putIfAbsent("followUpQueryId", null);
     if (q.get("result") != null) {
       var full = Json.map(q.get("result"));
       var page = new LinkedHashMap<>(full);
@@ -503,6 +529,7 @@ public class QueryService {
         .map(
             q -> {
               var out = new LinkedHashMap<>(q);
+              out.putIfAbsent("followUpQueryId", null);
               for (String key :
                   List.of(
                       "generatedSql",
