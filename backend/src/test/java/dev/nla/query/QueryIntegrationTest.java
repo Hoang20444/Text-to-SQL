@@ -267,6 +267,34 @@ class QueryIntegrationTest {
   }
 
   @Test
+  void csvExportIsOwnerOnlyAndAudited() throws Exception {
+    String body =
+        ask(TestJwt.analyst(), question("pg")).andReturn().getResponse().getContentAsString();
+    String url = "/api/v1/query/" + Json.str(Json.read(body), "queryId") + "/export.csv";
+    String csv =
+        mvc.perform(get(url).header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.analyst())))
+            .andExpect(status().isOk())
+            .andExpect(
+                org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                    .string("Content-Disposition", org.hamcrest.Matchers.startsWith("attachment;")))
+            .andReturn()
+            .getResponse()
+            .getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+    assertThat(csv)
+        .isEqualTo(
+            "﻿\"country\",\"total_amount\"\r\n"
+                + "\"JP\",\"10.00\"\r\n\"US\",\"100.00\"\r\n\"VN\",\"300.00\"\r\n");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM audit_event WHERE action = 'QUERY_CSV_EXPORT'",
+                Integer.class))
+        .isPositive();
+    // The viewer has the warehouse grant but does not own the query.
+    mvc.perform(get(url).header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.viewer())))
+        .andExpect(status().isForbidden());
+  }
+
+  @Test
   void singleNumberResultIsShownAsKpiCard() throws Exception {
     AI.answer("SELECT SUM(amount) AS total_amount FROM sales.orders");
     ask(TestJwt.analyst(), question("pg"))
