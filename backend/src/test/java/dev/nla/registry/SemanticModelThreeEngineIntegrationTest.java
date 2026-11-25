@@ -344,6 +344,16 @@ class SemanticModelThreeEngineIntegrationTest {
                   .andExpect(jsonPath("$.selectedMetrics[0]").value("revenue")));
       var rows = Json.objects(Json.map(query.get("result")).get("rows"));
       assertThat(rows).as(engine).isEqualTo(expected);
+      // T-4.3.2: the chart is derived from the selection and checked against the real types.
+      var chart = Json.map(query.get("chart"));
+      assertThat(chart.get("type")).as(engine).isEqualTo("bar");
+      assertThat(chart.get("x")).as(engine).isEqualTo("country");
+      assertThat(Json.objects(chart.get("series")).get(0).get("column"))
+          .as(engine)
+          .isEqualTo("revenue");
+      as(TestJwt.analyst(), post(url), Json.obj("metrics", List.of("revenue")))
+          .andExpect(jsonPath("$.chart.type").value("number"))
+          .andExpect(jsonPath("$.chart.series[0].column").value("revenue"));
       assertThat(Json.str(query, "generatedSql")).as(engine).contains("GROUP BY");
 
       as(TestJwt.analyst(), get("/api/v1/query/" + query.get("queryId")), null)
