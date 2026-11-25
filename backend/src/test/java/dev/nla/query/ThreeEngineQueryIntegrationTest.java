@@ -244,6 +244,59 @@ class ThreeEngineQueryIntegrationTest {
         .andExpect(jsonPath("$.result.truncated").value(false));
   }
 
+  private org.springframework.test.web.servlet.ResultActions ask(
+      String engine, String question, String followUpQueryId) throws Exception {
+    var body =
+        Json.obj(
+            "warehouseId",
+            "wh-sales-" + engine,
+            "datasetId",
+            "ds-sales-" + engine,
+            "question",
+            question,
+            "mode",
+            "DETERMINISTIC");
+    if (followUpQueryId != null) body.put("followUpQueryId", followUpQueryId);
+    return mvc.perform(
+        post("/api/v1/query")
+            .header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(Json.write(body)));
+  }
+
+  /** T-4.2.2: a follow-up sends the previous turn's validated SQL in the engine's own dialect. */
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void followUpRunsOnEachEngine(String engine) throws Exception {
+    register(engine);
+    AI.answer(
+        "SELECT country, SUM(amount) AS total_amount FROM sales.orders"
+            + " GROUP BY country ORDER BY country");
+    var first =
+        Json.read(
+            ask(engine, "Doanh thu theo quốc gia?", null)
+                .andExpect(jsonPath("$.status").value("SUCCESS"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+    AI.answer(
+        engine.equals("SQL_SERVER")
+            ? "SELECT TOP 1 country, SUM(amount) AS total_amount FROM sales.orders"
+                + " GROUP BY country ORDER BY total_amount DESC"
+            : "SELECT country, SUM(amount) AS total_amount FROM sales.orders"
+                + " GROUP BY country ORDER BY total_amount DESC LIMIT 1");
+    ask(engine, "Chỉ lấy nước cao nhất", Json.str(first, "queryId"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("SUCCESS"))
+        .andExpect(jsonPath("$.followUpQueryId").value(first.get("queryId")))
+        .andExpect(jsonPath("$.result.rows.length()").value(1))
+        .andExpect(jsonPath("$.result.rows[0].country").value("VN"))
+        .andExpect(jsonPath("$.result.rows[0].total_amount").value("300.00"));
+    var previous = Json.map(Json.read(AI.lastRequest.get()).get("previousTurn"));
+    assertThat(previous.get("sql")).as(engine).isEqualTo(first.get("generatedSql"));
+    assertThat(Json.read(AI.lastRequest.get()).get("sqlDialect")).isEqualTo(engine);
+  }
+
   /** T-4.3.2: export.csv is UTF-8 with BOM, neutralises formulas and keeps negative numbers. */
   @ParameterizedTest
   @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
