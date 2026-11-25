@@ -30,6 +30,24 @@ The private native planning/rewrite call is defined separately in [semantic-plan
 
 Ví dụ trên chỉ mô tả envelope: context rỗng phải bị từ chối, không là success fixture. [Fixture đầy đủ](examples/ai-request.json). Enum sqlDialect là một giá trị cụ thể, không chuỗi `POSTGRESQL | MYSQL | SQL_SERVER`. warehouseId/datasetId chỉ định danh; Python không dùng chúng để tìm credentials hay tự query.
 
+### Câu hỏi nối tiếp: `previousTurn` (T-4.2.2 ↔ T-4.2.1)
+
+Field tùy chọn, Java chỉ gửi khi public request có `followUpQueryId` hợp lệ (xem [domain.md](domain.md#query-request)); câu hỏi thường không có field này.
+
+```json
+"previousTurn": {
+  "question": "Doanh thu theo quốc gia?",
+  "sql": "SELECT country, SUM(total) AS revenue FROM sales.invoice GROUP BY country",
+  "explanation": "Tổng doanh thu theo từng quốc gia.",
+  "selectedMetrics": ["revenue"],
+  "selectedDimensions": ["country"]
+}
+```
+
+`question` 1..1000 ký tự; `sql` là SQL cuối Java đã validate và chạy (≤100000 ký tự, cùng dialect và dataset); `explanation` string hoặc null; hai mảng có thể rỗng. Không có dòng kết quả, credential hay queryId. Python dùng nó để hiểu câu mới rút gọn ("chỉ lấy top 5", "lọc riêng năm 2024") và vẫn phải trả candidate độc lập, đầy đủ cho câu mới; SQL cũ chỉ là ngữ cảnh, không phải SQL được phép chạy. Candidate vẫn qua đầy đủ kiểm tra Python và guard Java như mọi câu hỏi.
+
+Tác động AI: model `Input` hiện đặt `extra="forbid"`, nên Python phải khai báo field này (T-4.2.1) trước khi FE bật hỏi nối tiếp; trước đó request có `previousTurn` bị Python từ chối và Java ghi Query lỗi `LLM_ERROR`, không chạy SQL.
+
 ## Response 200
 
 ```json

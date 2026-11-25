@@ -34,7 +34,13 @@ Không dùng tên bảng không qualified làm security allowlist. Với MySQL, 
 
 ## Query request
 
-`{warehouseId:string,datasetId:string,question:string,mode?:AUTO|API|DETERMINISTIC,providerId?:string}`. providerId chỉ hợp lệ cho API, chọn profile đã cấu hình; AUTO dùng mặc định, DETERMINISTIC không dùng provider. Default AUTO dùng provider server đã cấu hình; không ngầm chuyển deterministic khi provider lỗi. `question` trim, 1..1000 ký tự Unicode. Java suy ra dialect, allowed context, model và versions. Không chấp nhận client-supplied SQL/semanticContext/credential ở endpoint này.
+`{warehouseId:string,datasetId:string,question:string,mode?:AUTO|API|DETERMINISTIC,providerId?:string,followUpQueryId?:string}`. providerId chỉ hợp lệ cho API, chọn profile đã cấu hình; AUTO dùng mặc định, DETERMINISTIC không dùng provider. Default AUTO dùng provider server đã cấu hình; không ngầm chuyển deterministic khi provider lỗi. `question` trim, 1..1000 ký tự Unicode. Java suy ra dialect, allowed context, model và versions. Không chấp nhận client-supplied SQL/semanticContext/credential ở endpoint này.
+
+`followUpQueryId` (T-4.2.2, US-4.2 AC2) là queryId của câu ngay trước khi người dùng hỏi nối tiếp; `question` chỉ chứa câu mới (ví dụ "chỉ lấy top 5"), FE không cần ghép câu cũ vào. Java kiểm tra trước khi tạo history:
+- Câu trước phải xem được như `GET /query/{id}` (chủ query hoặc ADMIN, warehouse còn được cấp quyền): không tồn tại → `404 RESOURCE_NOT_FOUND`, không có quyền → `403 FORBIDDEN`.
+- Câu trước phải cùng `datasetId` (do đó cùng warehouse) và có status `SUCCESS`; nếu không → `400 INVALID_REQUEST`. Chuỗi 1..200 ký tự, sai kiểu → 400.
+- Hợp lệ thì Java gửi tóm tắt câu trước sang Python (`previousTurn`, xem [java-python.md](java-python.md)): câu hỏi, SQL cuối đã validate, giải thích, metric/dimension đã chọn. **Không gửi dòng kết quả.** SQL của câu trước đã gom ngữ cảnh của cả chuỗi nên chỉ cần câu liền trước.
+- Query mới lưu `followUpQueryId`; chuỗi hội thoại được dựng lại bằng cách lần theo trường này. `semantic-query` không nhận trường này.
 
 ## Query (public detail)
 
@@ -53,6 +59,7 @@ Không dùng tên bảng không qualified làm security allowlist. Với MySQL, 
 | semanticVersion, schemaVersion                   | string, versions snapshot lúc chạy                                                                                                                                                                                                                                           |
 | latencyMs                                        | integer hoặc null khi đang chạy                                                                                                                                                                                                                                              |
 | createdAt, completedAt                           | timestamp; completedAt nullable                                                                                                                                                                                                                                              |
+| followUpQueryId                                  | string hoặc null; queryId của câu trước khi đây là câu hỏi nối tiếp (T-4.2.2), snapshot cũ không có field này được hiểu là null |
 | explanation                                      | string hoặc null                                                                                                                                                                                                                                                             |
 | assumptions, selectedMetrics, selectedDimensions | string[], default []                                                                                                                                                                                                                                                         |
 | sourceTables                                     | TableRef[]                                                                                                                                                                                                                                                                   |
