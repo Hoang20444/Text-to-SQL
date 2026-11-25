@@ -146,7 +146,8 @@ public class QueryService {
       var result = runReadOnly(w, sql, Integer.MAX_VALUE);
       QueryDeadline.check();
       q.put("result", result);
-      q.put("chart", candidate.get("chartRecommendation"));
+      // The AI only suggests a chart; Java decides it from the real columns (T-4.3.2).
+      q.put("chart", ChartSpecs.decide(candidate.get("chartRecommendation"), result));
       q.put("explanation", candidate.get("explanation"));
       q.put("assumptions", candidate.get("assumptions"));
       q.put("selectedMetrics", candidate.get("selectedMetrics"));
