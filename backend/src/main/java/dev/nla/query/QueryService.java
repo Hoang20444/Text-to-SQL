@@ -51,7 +51,8 @@ public class QueryService {
   }
 
   public Map<String, Object> run(Map<String, Object> b) {
-    Requests.fields(b, Set.of("warehouseId", "datasetId", "question", "mode", "providerId"));
+    Requests.fields(
+        b, Set.of("warehouseId", "datasetId", "question", "mode", "providerId", "followUpQueryId"));
     Requests.required(b, "warehouseId", "datasetId", "question");
     String question = Json.str(b, "question").strip();
     if (question.codePointCount(0, question.length()) > 1000)
@@ -73,7 +74,25 @@ public class QueryService {
     if (!Json.str(w, "status").equals("ACTIVE") || !Json.str(d, "status").equals("ACTIVE"))
       throw new ApiException(
           HttpStatus.CONFLICT, "DATASET_UNAVAILABLE", "Warehouse hoặc dataset không hoạt động.");
+    var previous =
+        b.containsKey("followUpQueryId") ? followUpParent(b.get("followUpQueryId"), d) : null;
     return execute(w, d, question, mode, Json.str(b, "providerId"));
+  }
+
+  /**
+   * The query a follow-up builds on (T-4.2.2, US-4.2 AC2). It must be visible to the caller like
+   * {@code GET /query/{id}}, belong to the same dataset and have succeeded; all checks happen
+   * before a history record exists.
+   */
+  private Map<String, Object> followUpParent(Object value, Map<String, Object> dataset) {
+    if (!(value instanceof String id) || id.isBlank() || id.length() > 200)
+      throw ApiException.bad("followUpQueryId phải là queryId hợp lệ.");
+    var parent = stored(id);
+    if (!Json.str(parent, "datasetId").equals(Json.str(dataset, "datasetId")))
+      throw ApiException.bad("Chỉ hỏi nối tiếp trong cùng tập dữ liệu với câu trước.");
+    if (!"SUCCESS".equals(parent.get("status")))
+      throw ApiException.bad("Chỉ hỏi nối tiếp từ câu hỏi đã chạy thành công.");
+    return parent;
   }
 
   private Map<String, Object> execute(
