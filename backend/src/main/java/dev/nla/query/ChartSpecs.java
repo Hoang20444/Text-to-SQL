@@ -27,8 +27,36 @@ final class ChartSpecs {
   static final String DEFAULT_TITLE = "Kết quả truy vấn";
   static final int MAX_TITLE = 500;
   static final int MAX_LABEL = 500;
+  static final int MAX_REASON = 1000;
 
   private ChartSpecs() {}
+
+  /**
+   * Recommendation for a structured semantic query, where no AI is called: the compiler aliases
+   * every column with the metric or dimension name. One dimension gives a line chart when it is a
+   * time column and a bar (or grouped-bar for several metrics) otherwise; no dimension gives a
+   * number; more dimensions stay a table. The result is still checked by {@link #decide}.
+   */
+  static Map<String, Object> suggest(
+      List<String> metrics, List<String> dimensions, Map<String, Object> result) {
+    String title =
+        String.join(", ", metrics)
+            + (dimensions.isEmpty() ? "" : " theo " + String.join(", ", dimensions));
+    var series = metrics.stream().map(m -> Json.obj("column", m, "label", m)).toList();
+    if (dimensions.isEmpty())
+      return metrics.size() == 1
+          ? chart("number", title, null, series, null)
+          : table(title, "Nhiều chỉ số không có chiều phân tích; hiển thị dạng bảng.");
+    if (dimensions.size() > 1)
+      return table(title, "Nhiều chiều phân tích cùng lúc; hiển thị dạng bảng.");
+    String x = dimensions.get(0);
+    boolean time =
+        Json.objects(result.get("columns")).stream()
+            .anyMatch(
+                c -> Json.str(c, "name").equals(x) && Json.str(c, "semanticRole").equals("TIME"));
+    String type = time ? "line" : metrics.size() == 1 ? "bar" : "grouped-bar";
+    return chart(type, title, x, series, null);
+  }
 
   static Map<String, Object> decide(Object recommendation, Map<String, Object> result) {
     var columns = Json.objects(result.get("columns"));
@@ -43,7 +71,12 @@ final class ChartSpecs {
     String type = Json.str(spec, "type");
     if (!TYPES.contains(type))
       return table(title, "Loại biểu đồ '" + type + "' không được hỗ trợ.");
-    if (type.equals("table")) return table(title, null);
+    if (type.equals("table"))
+      return table(
+          title,
+          spec.get("reason") instanceof String r && !r.isBlank() && r.length() <= MAX_REASON
+              ? r
+              : null);
     if (rows.isEmpty()) return table(title, "Không có dòng dữ liệu để vẽ biểu đồ.");
 
     Map<String, Object> x = null;

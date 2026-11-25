@@ -165,6 +165,34 @@ class ChartSpecsTest {
   }
 
   @Test
+  void suggestsChartsForStructuredSemanticSelections() {
+    var bar = ChartSpecs.suggest(List.of("revenue"), List.of("country"), byCountry());
+    assertThat(ChartSpecs.decide(bar, byCountry())).containsEntry("type", "bar");
+    var grouped = ChartSpecs.suggest(List.of("revenue", "orders"), List.of("country"), byCountry());
+    assertThat(ChartSpecs.decide(grouped, byCountry())).containsEntry("type", "grouped-bar");
+    var many = ChartSpecs.suggest(List.of("revenue"), List.of("country", "city"), byCountry());
+    assertThat(ChartSpecs.decide(many, byCountry()))
+        .containsEntry("type", "table")
+        .containsKey("reason");
+
+    var byMonth =
+        Json.obj(
+            "columns",
+            List.of(
+                Json.obj(
+                    "name", "month", "label", "month", "dataType", "DATE", "semanticRole", "TIME"),
+                col("revenue", "DECIMAL")),
+            "rows",
+            List.of(
+                Json.obj("month", "2026-01-01", "revenue", "10.00"),
+                Json.obj("month", "2026-02-01", "revenue", "12.00")));
+    var line = ChartSpecs.suggest(List.of("revenue"), List.of("month"), byMonth);
+    assertThat(ChartSpecs.decide(line, byMonth))
+        .containsEntry("type", "line")
+        .containsEntry("x", "month");
+  }
+
+  @Test
   void replacesOverlongOrBlankTitlesAndLabels() {
     var spec = rec("bar", "country", "revenue");
     spec.put("title", "x".repeat(ChartSpecs.MAX_TITLE + 1));

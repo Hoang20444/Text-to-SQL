@@ -210,8 +210,13 @@ public class QueryService {
       q.put("selectedMetrics", compiled.metrics());
       q.put("selectedDimensions", compiled.dimensions());
       QueryDeadline.check();
-      q.put("result", runReadOnly(w, validated.sql(), limit));
+      var result = runReadOnly(w, validated.sql(), limit);
       QueryDeadline.check();
+      q.put("result", result);
+      q.put(
+          "chart",
+          ChartSpecs.decide(
+              ChartSpecs.suggest(compiled.metrics(), compiled.dimensions(), result), result));
       q.put("status", "SUCCESS");
     } catch (Exception e) {
       recordFailure(q, w, e);
