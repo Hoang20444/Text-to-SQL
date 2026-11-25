@@ -303,6 +303,110 @@ class QueryIntegrationTest {
         .andExpect(jsonPath("$.chart.series[0].column").value("total_amount"));
   }
 
+  private String askFor(String token, Map<String, Object> body) throws Exception {
+    return Json.str(
+        Json.read(ask(token, body).andReturn().getResponse().getContentAsString()), "queryId");
+  }
+
+  private static Map<String, Object> followUp(String suffix, String question, Object parentId) {
+    var body = question(suffix);
+    body.put("question", question);
+    body.put("followUpQueryId", parentId);
+    return body;
+  }
+
+  /** T-4.2.2: a short follow-up carries the previous turn to the AI and is linked in history. */
+  @Test
+  void followUpSendsPreviousTurnAndLinksHistory() throws Exception {
+    String first = askFor(TestJwt.analyst(), question("pg"));
+    assertThat(Json.read(AI.lastRequest.get())).doesNotContainKey("previousTurn");
+
+    AI.answer(
+        "SELECT country, SUM(amount) AS total_amount FROM sales.orders"
+            + " GROUP BY country ORDER BY total_amount DESC LIMIT 2");
+    ask(TestJwt.analyst(), followUp("pg", "Chỉ lấy 2 nước đứng đầu", first))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("SUCCESS"))
+        .andExpect(jsonPath("$.question").value("Chỉ lấy 2 nước đứng đầu"))
+        .andExpect(jsonPath("$.followUpQueryId").value(first))
+        .andExpect(jsonPath("$.explanation").value("Tổng tiền theo quốc gia."))
+        .andExpect(jsonPath("$.assumptions[0]").value("Số tiền theo USD."))
+        .andExpect(jsonPath("$.sourceTables[0].name").value("orders"))
+        .andExpect(jsonPath("$.result.rows.length()").value(2));
+
+    var sent = Json.read(AI.lastRequest.get());
+    assertThat(sent.get("question")).isEqualTo("Chỉ lấy 2 nước đứng đầu");
+    var previous = Json.map(sent.get("previousTurn"));
+    assertThat(previous)
+        .containsOnlyKeys(
+            "question", "sql", "explanation", "selectedMetrics", "selectedDimensions");
+    assertThat(previous.get("question")).isEqualTo("Doanh thu theo quốc gia?");
+    assertThat((String) previous.get("sql")).startsWith("SELECT country, SUM(amount)");
+    assertThat(previous.get("selectedMetrics")).isEqualTo(List.of("total_amount"));
+    // Result rows of the previous query never reach the model.
+    assertThat(Json.write(previous)).doesNotContain("300.00", "rows");
+
+    mvc.perform(
+            get("/api/v1/query/history")
+                .header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.analyst())))
+        .andExpect(
+            jsonPath("$.items[?(@.queryId=='" + first + "')].followUpQueryId")
+                .value(org.hamcrest.Matchers.contains((Object) null)))
+        .andExpect(jsonPath("$.items[?(@.followUpQueryId=='" + first + "')]").isNotEmpty());
+  }
+
+  /** Each follow-up only needs the turn right before it: its SQL already carries the chain. */
+  @Test
+  void followUpOfAFollowUpSendsTheLatestTurn() throws Exception {
+    String first = askFor(TestJwt.analyst(), question("pg"));
+    AI.answer(
+        "SELECT country, SUM(amount) AS total_amount FROM sales.orders WHERE is_paid"
+            + " GROUP BY country ORDER BY country");
+    String second = askFor(TestJwt.analyst(), followUp("pg", "Chỉ đơn đã thanh toán", first));
+    AI.answer(
+        "SELECT country, SUM(amount) AS total_amount FROM sales.orders WHERE is_paid"
+            + " GROUP BY country ORDER BY total_amount DESC LIMIT 1");
+    ask(TestJwt.analyst(), followUp("pg", "Nước cao nhất", second))
+        .andExpect(jsonPath("$.status").value("SUCCESS"))
+        .andExpect(jsonPath("$.followUpQueryId").value(second));
+    var previous = Json.map(Json.read(AI.lastRequest.get()).get("previousTurn"));
+    assertThat(previous.get("question")).isEqualTo("Chỉ đơn đã thanh toán");
+    assertThat((String) previous.get("sql")).contains("WHERE is_paid");
+  }
+
+  @Test
+  void invalidFollowUpsAreRejectedWithoutHistory() throws Exception {
+    String own = askFor(TestJwt.analyst(), question("pg"));
+    String adminsOther = askFor(TestJwt.admin(), question("other"));
+    String adminsPg = askFor(TestJwt.admin(), question("pg"));
+    AI.answer("DELETE FROM sales.orders");
+    String rejected = askFor(TestJwt.analyst(), question("pg"));
+    int before = historyCount();
+
+    ask(TestJwt.analyst(), followUp("pg", "Top 5", "qry-missing"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.error.code").value("RESOURCE_NOT_FOUND"));
+    // Another user's query cannot be continued by the analyst.
+    ask(TestJwt.analyst(), followUp("pg", "Top 5", adminsPg))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+    ask(TestJwt.admin(), followUp("pg", "Top 5", adminsOther))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+    ask(TestJwt.analyst(), followUp("pg", "Top 5", rejected))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+    ask(TestJwt.analyst(), followUp("pg", "Top 5", 42)).andExpect(status().isBadRequest());
+    ask(TestJwt.analyst(), followUp("pg", "Top 5", " ")).andExpect(status().isBadRequest());
+    assertThat(historyCount()).isEqualTo(before);
+
+    // ADMIN may continue any query it can see, like GET /query/{id}.
+    AI.answer("SELECT country FROM sales.orders GROUP BY country ORDER BY country");
+    ask(TestJwt.admin(), followUp("pg", "Chỉ tên nước", own))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.followUpQueryId").value(own));
+  }
+
   @Test
   void writeSqlFromAiIsRejectedBeforeExecution() throws Exception {
     AI.answer("DELETE FROM sales.orders");
