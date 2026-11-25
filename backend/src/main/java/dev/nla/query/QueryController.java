@@ -50,36 +50,18 @@ public class QueryController {
     return queries.result(id, p);
   }
 
+  /** The authorized result snapshot as Excel-safe CSV (T-4.3.2); never re-runs the SQL. */
   @GetMapping(value = "/query/{id}/export.csv", produces = "text/csv")
-  ResponseEntity<String> csv(@PathVariable String id) {
+  ResponseEntity<byte[]> csv(@PathVariable String id) {
     queries.result(id, Map.of());
-    var full = Json.map(queries.stored(id).get("result"));
-    var columns = Json.objects(full.get("columns"));
-    var lines = new ArrayList<String>();
-    lines.add(
-        columns.stream()
-            .map(c -> cell(Json.str(c, "name"), true))
-            .collect(java.util.stream.Collectors.joining(",")));
-    for (var row : Json.objects(full.get("rows")))
-      lines.add(
-          columns.stream()
-              .map(
-                  c ->
-                      cell(
-                          Objects.toString(row.get(Json.str(c, "name")), ""),
-                          Set.of("STRING", "DATE", "TIMESTAMP").contains(c.get("dataType"))))
-              .collect(java.util.stream.Collectors.joining(",")));
+    byte[] body = CsvExport.write(Json.map(queries.stored(id).get("result")));
     store.audit("QUERY_CSV_EXPORT", id);
     return ResponseEntity.ok()
+        .contentType(new MediaType("text", "csv", java.nio.charset.StandardCharsets.UTF_8))
         .header(
             "Content-Disposition",
             "attachment; filename=\"query-" + id.replaceAll("[^a-zA-Z0-9_-]", "_") + ".csv\"")
         .header("X-Content-Type-Options", "nosniff")
-        .body(String.join("\r\n", lines) + "\r\n");
-  }
-
-  static String cell(String text, boolean string) {
-    if (string && text.matches("(?s)^[\\s\\u0000-\\u001f]*[=+@-].*")) text = "'" + text;
-    return "\"" + text.replace("\"", "\"\"") + "\"";
+        .body(body);
   }
 }
