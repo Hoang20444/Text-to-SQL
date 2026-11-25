@@ -189,6 +189,9 @@ class QueryIntegrationTest {
             .andExpect(jsonPath("$.result.rows[2].total_amount").value("300.00"))
             .andExpect(jsonPath("$.result.truncated").value(false))
             .andExpect(jsonPath("$.chart.type").value("bar"))
+            .andExpect(jsonPath("$.chart.x").value("country"))
+            .andExpect(jsonPath("$.chart.series[0].column").value("total_amount"))
+            .andExpect(jsonPath("$.chart.reason").doesNotExist())
             .andExpect(jsonPath("$.error").isEmpty())
             .andReturn()
             .getResponse()
@@ -239,6 +242,37 @@ class QueryIntegrationTest {
         .andExpect(jsonPath("$.result.columns[1].dataType").value("TIMESTAMP"))
         .andExpect(jsonPath("$.result.rows[0].is_paid").value(true))
         .andExpect(jsonPath("$.result.rows[0].score").value(1.5));
+  }
+
+  @Test
+  void chartThatDoesNotFitTheResultIsStoredAsTable() throws Exception {
+    // The AI points the chart at total_amount but the SQL only returns order_id and country.
+    AI.answer("SELECT order_id, country FROM sales.orders ORDER BY order_id");
+    String body =
+        ask(TestJwt.analyst(), question("pg"))
+            .andExpect(jsonPath("$.status").value("SUCCESS"))
+            .andExpect(jsonPath("$.chart.type").value("table"))
+            .andExpect(jsonPath("$.chart.series").isEmpty())
+            .andExpect(jsonPath("$.chart.x").doesNotExist())
+            .andExpect(
+                jsonPath("$.chart.reason")
+                    .value(org.hamcrest.Matchers.containsString("total_amount")))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    mvc.perform(
+            get("/api/v1/query/" + Json.str(Json.read(body), "queryId"))
+                .header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.analyst())))
+        .andExpect(jsonPath("$.chart.type").value("table"));
+  }
+
+  @Test
+  void singleNumberResultIsShownAsKpiCard() throws Exception {
+    AI.answer("SELECT SUM(amount) AS total_amount FROM sales.orders");
+    ask(TestJwt.analyst(), question("pg"))
+        .andExpect(jsonPath("$.status").value("SUCCESS"))
+        .andExpect(jsonPath("$.chart.type").value("number"))
+        .andExpect(jsonPath("$.chart.series[0].column").value("total_amount"));
   }
 
   @Test
