@@ -87,6 +87,15 @@ Kết quả được lưu snapshot có giới hạn; GET trang sau và CSV đọ
 
 Python recommendation dùng cùng cấu trúc nhưng Java quyết định chart cuối sau khi kiểm tra shape/type/units; không hợp lệ thì table với reason. FE validate allowlist lần nữa. Không executable JS, HTML/component hay callback từ AI.
 
+Quy tắc Java đang áp dụng (T-4.3.2), cho cả `POST /query` và `semantic-query`:
+- `Query.chart` của truy vấn SUCCESS luôn là ChartSpec dựng lại chỉ từ các field allowlist (`type,title,x?,series,reason?`); field lạ trong recommendation bị bỏ.
+- Kết quả đúng 1 dòng × 1 cột số → `number` (thẻ KPI), bất kể AI gợi ý gì.
+- `x` và `series[].column` được đối chiếu tên cột result (chính xác trước, sau đó không phân biệt hoa thường nếu chỉ khớp một cột) và trả về tên cột thật; thiếu cột, cột lặp, series không phải INTEGER/BIGINT/DECIMAL/FLOAT hoặc toàn NULL → `table`.
+- Theo type: `number` cần 1 dòng + 1 series; `bar`/`pie` cần `x` + đúng 1 series; `pie` không nhận giá trị âm và tổng phải > 0; `grouped-bar` cần `x` + ≥2 series; `line`/`area` cần `x` + ≥1 series. Result rỗng, type ngoài allowlist hoặc không có recommendation → `table`.
+- `title` rỗng hoặc dài hơn 500 ký tự → "Kết quả truy vấn"; `label` rỗng hoặc dài hơn 500 → label cột. `reason` là tiếng Việt, chỉ có khi phải chuyển về `table` (hoặc khi recommendation `table` tự mang reason hợp lệ ≤1000 ký tự).
+- `semantic-query` không gọi AI: Java tự đề xuất trước khi kiểm tra như trên — không có dimension + 1 metric → `number`; 1 dimension TIME → `line`; 1 dimension khác → `bar` (1 metric) hoặc `grouped-bar` (nhiều metric); nhiều metric không dimension hoặc ≥2 dimension → `table` với reason.
+- Chưa kiểm tra đơn vị vì result column chưa mang `unit`; khi adapter bổ sung `unit`, grouped-bar/line/area với đơn vị khác nhau phải chuyển `table`.
+
 ## List convention
 
 Query params: `page=1&pageSize=20&sort=createdAt&direction=DESC`; pageSize tối đa 100. sort dùng allowlist từng endpoint, không nối trực tiếp SQL. Response `{items:[],page:1,pageSize:20,totalItems:0,totalPages:0}`; đây là count của resource list (registry/history), không tổng query warehouse. Stable sort có tie-breaker ID. Search là `search`, time filter UTC là `from`,`to` theo khoảng [from,to). Không tự giữ dataset cũ khi đổi warehouse.

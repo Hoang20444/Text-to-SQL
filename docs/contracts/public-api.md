@@ -80,13 +80,13 @@ Metadata DTO lấy shape tại semantic-model.md; TableMetadata thêm tableId, P
 | GET /query/history | Page<QuerySummary>, đặt route tĩnh trước /query/{id} |
 | GET /query/{id} | Query, bao gồm trang đầu result nếu còn snapshot |
 | GET /query/{id}/result | QueryResult; params page,pageSize,sort,direction,search; filter/sort trên cùng bounded snapshot |
-| GET /query/{id}/export.csv | text/csv UTF-8, attachment; cùng authorized bounded snapshot; cột Decimal/BIGINT không mất precision |
+| GET /query/{id}/export.csv | `text/csv;charset=UTF-8` có BOM (EF BB BF) để Excel đọc đúng tiếng Việt, `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`; cùng authorized bounded snapshot (chỉ chủ query hoặc ADMIN, không chạy lại SQL); audit `QUERY_CSV_EXPORT`; cột Decimal/BIGINT không mất precision |
 | POST /query/{id}/saved | `{name:string}` → 201 `{savedResultId,queryId,name,createdAt}`; lưu bookmark + retention snapshot theo policy |
 | GET /query/{id}/saved | Danh sách bookmark authorized của query |
 
 QuerySummary: queryId,warehouseId,datasetId,engine,question,status,model,executionMode,semanticVersion,schemaVersion,latencyMs,rowCount,createdAt,correlationId. rowCount nullable khi chưa có result. History filters search,warehouseId,engine,datasetId,status,model,from,to; sort createdAt/latencyMs/status, stable tie-breaker queryId. Context change không làm mất filter warehouse nếu user chưa đổi filter.
 
-CSV escape delimiters/quotes/newlines và chống spreadsheet formula injection cho string bắt đầu bằng =,+,-,@ hoặc control char nguy hiểm; không biến giá trị numeric hợp lệ thành string tùy tiện. Không tạo share link công khai chưa được authorization; nút share trong ảnh là optional UX mở rộng, không hứa có sharing endpoint hiện tại.
+CSV escape delimiters/quotes/newlines và chống spreadsheet formula injection cho string bắt đầu bằng =,+,-,@ hoặc control char nguy hiểm; không biến giá trị numeric hợp lệ thành string tùy tiện. Định dạng (T-4.3.2): mọi ô đặt trong `"..."` (dấu `"` nhân đôi), dòng kết thúc CRLF, header là `name` của cột; NULL là ô trống không ngoặc, chuỗi rỗng là `""`. Ô của cột không phải INTEGER/BIGINT/DECIMAL/FLOAT/BOOLEAN (và header) được thêm `'` ở đầu khi ký tự đầu tiên sau khoảng trắng/control là `= + - @`, hoặc khi ô bắt đầu bằng tab/CR; cột số và boolean giữ nguyên nên số âm vẫn là số. Không tạo share link công khai chưa được authorization; nút share trong ảnh là optional UX mở rộng, không hứa có sharing endpoint hiện tại.
 
 ## Ingestion
 
