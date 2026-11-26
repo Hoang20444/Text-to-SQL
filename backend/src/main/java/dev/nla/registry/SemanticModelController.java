@@ -3,6 +3,7 @@ package dev.nla.registry;
 import dev.nla.common.ApiException;
 import dev.nla.common.Json;
 import dev.nla.common.Requests;
+import dev.nla.knowledge.KnowledgeService;
 import dev.nla.query.SemanticCompiler;
 import dev.nla.store.Store;
 import java.time.DateTimeException;
@@ -37,18 +38,21 @@ public class SemanticModelController {
   private final MetricExpressions metricExpressions;
   private final RelationshipCardinality cardinality;
   private final ExampleQueries exampleQueries;
+  private final KnowledgeService knowledge;
 
   public SemanticModelController(
       Store store,
       CatalogService catalog,
       MetricExpressions metricExpressions,
       RelationshipCardinality cardinality,
-      ExampleQueries exampleQueries) {
+      ExampleQueries exampleQueries,
+      KnowledgeService knowledge) {
     this.store = store;
     this.catalog = catalog;
     this.metricExpressions = metricExpressions;
     this.cardinality = cardinality;
     this.exampleQueries = exampleQueries;
+    this.knowledge = knowledge;
   }
 
   /** Any user allowed to read the dataset sees the full context; access is checked by Store. */
@@ -78,6 +82,14 @@ public class SemanticModelController {
     dataset.put("updatedAt", Instant.now().toString());
     store.updateDataset(dataset, checked.model());
     store.audit("SEMANTIC_UPDATE", id, Json.obj("semanticVersion", body.get("semanticVersion")));
+    // New definitions make the knowledge index stale: sync it in the background (T-4.1.2).
+    // Saving the model never fails because of the knowledge base.
+    try {
+      knowledge.reindex(id, "SEMANTIC_MODEL");
+    } catch (RuntimeException failure) {
+      org.slf4j.LoggerFactory.getLogger(SemanticModelController.class)
+          .warn("Knowledge sync was not started dataset={}", id, failure);
+    }
     return semanticModel(id);
   }
 
