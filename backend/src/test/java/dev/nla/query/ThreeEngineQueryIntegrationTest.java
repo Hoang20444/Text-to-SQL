@@ -292,9 +292,13 @@ class ThreeEngineQueryIntegrationTest {
         .andExpect(jsonPath("$.result.rows.length()").value(1))
         .andExpect(jsonPath("$.result.rows[0].country").value("VN"))
         .andExpect(jsonPath("$.result.rows[0].total_amount").value("300.00"));
-    var previous = Json.map(Json.read(AI.lastRequest.get()).get("previousTurn"));
-    assertThat(previous.get("sql")).as(engine).isEqualTo(first.get("generatedSql"));
-    assertThat(Json.read(AI.lastRequest.get()).get("sqlDialect")).isEqualTo(engine);
+    var sent = Json.read(AI.lastRequest.get());
+    assertThat(sent.get("question"))
+        .as(engine)
+        .isEqualTo(
+            "Previous question context: Doanh thu theo quốc gia?\n"
+                + "Follow-up question: Chỉ lấy nước cao nhất");
+    assertThat(sent.get("sqlDialect")).isEqualTo(engine);
   }
 
   /** T-4.3.2: export.csv is UTF-8 with BOM, neutralises formulas and keeps negative numbers. */

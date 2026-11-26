@@ -315,11 +315,12 @@ class QueryIntegrationTest {
     return body;
   }
 
-  /** T-4.2.2: a short follow-up carries the previous turn to the AI and is linked in history. */
+  /** T-4.2.2: a short follow-up reaches the AI with the previous question and is linked. */
   @Test
-  void followUpSendsPreviousTurnAndLinksHistory() throws Exception {
+  void followUpSendsPreviousQuestionAndLinksHistory() throws Exception {
     String first = askFor(TestJwt.analyst(), question("pg"));
-    assertThat(Json.read(AI.lastRequest.get())).doesNotContainKey("previousTurn");
+    assertThat(Json.read(AI.lastRequest.get()).get("question"))
+        .isEqualTo("Doanh thu theo quốc gia?");
 
     AI.answer(
         "SELECT country, SUM(amount) AS total_amount FROM sales.orders"
@@ -335,16 +336,21 @@ class QueryIntegrationTest {
         .andExpect(jsonPath("$.result.rows.length()").value(2));
 
     var sent = Json.read(AI.lastRequest.get());
-    assertThat(sent.get("question")).isEqualTo("Chỉ lấy 2 nước đứng đầu");
-    var previous = Json.map(sent.get("previousTurn"));
-    assertThat(previous)
+    // The format the AI service reads (semantic-workbench.md §5); no extra request field.
+    assertThat(sent.get("question"))
+        .isEqualTo(
+            "Previous question context: Doanh thu theo quốc gia?\n"
+                + "Follow-up question: Chỉ lấy 2 nước đứng đầu");
+    assertThat(sent)
         .containsOnlyKeys(
-            "question", "sql", "explanation", "selectedMetrics", "selectedDimensions");
-    assertThat(previous.get("question")).isEqualTo("Doanh thu theo quốc gia?");
-    assertThat((String) previous.get("sql")).startsWith("SELECT country, SUM(amount)");
-    assertThat(previous.get("selectedMetrics")).isEqualTo(List.of("total_amount"));
-    // Result rows of the previous query never reach the model.
-    assertThat(Json.write(previous)).doesNotContain("300.00", "rows");
+            "correlationId",
+            "warehouseId",
+            "datasetId",
+            "sqlDialect",
+            "question",
+            "semanticContext");
+    // Neither the previous SQL nor its result rows reach the model.
+    assertThat(Json.write(sent.get("question"))).doesNotContain("SELECT", "300.00");
 
     mvc.perform(
             get("/api/v1/query/history")
@@ -355,9 +361,9 @@ class QueryIntegrationTest {
         .andExpect(jsonPath("$.items[?(@.followUpQueryId=='" + first + "')]").isNotEmpty());
   }
 
-  /** Each follow-up only needs the turn right before it: its SQL already carries the chain. */
+  /** A third question keeps the filter of the second: the whole chain is the previous context. */
   @Test
-  void followUpOfAFollowUpSendsTheLatestTurn() throws Exception {
+  void followUpOfAFollowUpSendsTheWholeChain() throws Exception {
     String first = askFor(TestJwt.analyst(), question("pg"));
     AI.answer(
         "SELECT country, SUM(amount) AS total_amount FROM sales.orders WHERE is_paid"
@@ -369,9 +375,36 @@ class QueryIntegrationTest {
     ask(TestJwt.analyst(), followUp("pg", "Nước cao nhất", second))
         .andExpect(jsonPath("$.status").value("SUCCESS"))
         .andExpect(jsonPath("$.followUpQueryId").value(second));
-    var previous = Json.map(Json.read(AI.lastRequest.get()).get("previousTurn"));
-    assertThat(previous.get("question")).isEqualTo("Chỉ đơn đã thanh toán");
-    assertThat((String) previous.get("sql")).contains("WHERE is_paid");
+    assertThat(Json.read(AI.lastRequest.get()).get("question"))
+        .isEqualTo(
+            "Previous question context: Doanh thu theo quốc gia?; Chỉ đơn đã thanh toán\n"
+                + "Follow-up question: Nước cao nhất");
+    // History keeps exactly what the user typed, not the composed text.
+    mvc.perform(
+            get("/api/v1/query/" + second)
+                .header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.analyst())))
+        .andExpect(jsonPath("$.question").value("Chỉ đơn đã thanh toán"));
+  }
+
+  @Test
+  void longChainsDropTheOldestQuestionsAndTooLongFollowUpsAreRejected() throws Exception {
+    String longText = "Doanh thu theo quốc gia và thể loại ".repeat(15).strip();
+    var opening = question("pg");
+    opening.put("question", longText);
+    String first = askFor(TestJwt.analyst(), opening);
+    String second = askFor(TestJwt.analyst(), followUp("pg", "Chỉ năm 2026", first));
+    ask(TestJwt.analyst(), followUp("pg", "x".repeat(500), second))
+        .andExpect(jsonPath("$.status").value("SUCCESS"));
+    // The long opening question no longer fits, so only the direct parent stays.
+    assertThat(Json.read(AI.lastRequest.get()).get("question"))
+        .isEqualTo(
+            "Previous question context: Chỉ năm 2026\nFollow-up question: " + "x".repeat(500));
+
+    int before = historyCount();
+    ask(TestJwt.analyst(), followUp("pg", "y".repeat(1000), first))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+    assertThat(historyCount()).isEqualTo(before);
   }
 
   @Test
