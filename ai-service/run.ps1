@@ -12,6 +12,7 @@ if (-not $tokenLine) {
 $env:PYTHON_AI_TOKEN = ($tokenLine -split "=", 2)[1].Trim()
 $env:LLM_TIMEOUT_MS = "55000"
 $env:LLM_MAX_OUTPUT_TOKENS = "512"
+if (-not $env:KNOWLEDGE_ENABLED) { $env:KNOWLEDGE_ENABLED = "true" }
 & .\.venv\Scripts\Activate.ps1
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host " DANG KHOI DONG PYTHON AI SERVICE (PORT 8000)..." -ForegroundColor Cyan

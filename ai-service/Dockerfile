@@ -4,9 +4,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 WORKDIR /app
 COPY ai-service/requirements.txt ./requirements.txt
+COPY ai-service/check_memory_runtime.py ./check_memory_runtime.py
 RUN pip install --no-cache-dir -r requirements.txt \
+    && python check_memory_runtime.py \
     && groupadd --gid 10001 nla \
-    && useradd --uid 10001 --gid nla --no-create-home nla
+    && useradd --uid 10001 --gid nla --no-create-home nla \
+    && mkdir -p /var/lib/nla/knowledge \
+    && chown 10001:10001 /var/lib/nla/knowledge
 COPY --chown=10001:10001 ai-service/*.py ./
 COPY --chown=10001:10001 ai-service/wren/ ./wren/
 COPY --chown=10001:10001 ai-service/third-party/licenses/ /app/third-party/licenses/
