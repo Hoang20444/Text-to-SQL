@@ -1,13 +1,16 @@
-"""Sprint 3 business semantic compilation and validation boundaries."""
+"""Sprint 3 & 4 business compilation, local knowledge vector memory, and workbench boundaries."""
 
+import hashlib
 from copy import deepcopy
 
+import httpx
 import pytest
 import sqlglot
 from fastapi.testclient import TestClient
 from sqlglot import exp
 
-from app import app
+import knowledge
+from app import Context, Example, Input, app, recalled_example_is_valid
 from wren.nla_business import BusinessCompiler
 from wren.nla_planning import DatasetPlanningError
 
@@ -211,7 +214,7 @@ def test_private_routes_accept_json_enum_and_reject_unknown_filter(client, diale
 
 
 def test_private_workbench_auth_and_correlation(client):
-    for path in ["business-plan", "business-validate"]:
+    for path in ["business-plan", "business-validate", "knowledge/status"]:
         assert client.post("/internal/v1/" + path, json=envelope()).status_code == 401
     response = client.post(
         "/internal/v1/business-validate",
@@ -219,3 +222,256 @@ def test_private_workbench_auth_and_correlation(client):
         json=envelope(),
     )
     assert response.status_code == 400
+
+
+def test_recalled_sql_is_replanned_against_current_physical_allowlist():
+    request = Input.model_validate({**envelope(), "question": "Count events"})
+    assert recalled_example_is_valid(
+        Example(
+            question="Count",
+            sqlDialect="POSTGRESQL",
+            sql='SELECT COUNT(*) AS n FROM "analytics"."events"',
+        ),
+        request,
+    )
+    assert not recalled_example_is_valid(
+        Example(
+            question="Missing",
+            sqlDialect="POSTGRESQL",
+            sql='SELECT missing FROM "analytics"."events"',
+        ),
+        request,
+    )
+    assert not recalled_example_is_valid(
+        Example(question="Other", sqlDialect="POSTGRESQL", sql="SELECT * FROM private.secrets"),
+        request,
+    )
+    assert not recalled_example_is_valid(
+        Example(question="Write", sqlDialect="POSTGRESQL", sql="DELETE FROM analytics.events"),
+        request,
+    )
+
+
+class FixedEmbeddings:
+    """Tests use deterministic vectors with the actual SDK/LanceDB storage path."""
+
+    def compute_source_embeddings(self, texts):
+        return [
+            [(value + 1) / 256 for value in hashlib.sha256(text.encode()).digest()]
+            for text in texts
+        ]
+
+    def compute_query_embeddings(self, query):
+        return self.compute_source_embeddings([query] if isinstance(query, str) else query)
+
+
+@pytest.fixture
+def memory(monkeypatch, tmp_path):
+    monkeypatch.setenv("KNOWLEDGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(knowledge, "LocalEmbeddings", FixedEmbeddings)
+    return knowledge.DatasetKnowledge("warehouse", "dataset", "POSTGRESQL", semantic_context())
+
+
+def test_source_kit_lancedb_index_search_approvals_and_reset(memory):
+    assert memory.status()["status"] == "EMPTY"
+    status = memory.index()
+    assert status["status"] == "READY"
+    assert status["schemaItems"] == 11
+    assert status["exampleCount"] == 1
+    results = memory.search("channel amount", 20)
+    assert results["strategy"] == "vector"
+    assert {item["itemType"] for item in results["hits"]} >= {
+        "metric",
+        "dimension",
+        "business_rule",
+        "relationship",
+    }
+    assert len(results["examples"]) == 1
+    example = {
+        "question": "Approved actual query",
+        "sql": "SELECT COUNT(*) FROM analytics.channels",
+    }
+    approved = memory.remember(example)
+    assert approved["total"] == 2
+    assert memory.remember(example)["total"] == 2
+    stable = next(
+        item["entryId"] for item in approved["items"] if item["source"] == "approved-query"
+    )
+    assert memory.index()["exampleCount"] == 2
+    assert memory.forget(stable)["total"] == 1
+    assert memory.reset()["status"] == "EMPTY"
+    assert memory.index()["status"] == "READY"
+
+
+def test_knowledge_dataset_isolation_and_stale_version(memory):
+    memory.index()
+    other = knowledge.DatasetKnowledge("other", "dataset", "POSTGRESQL", semantic_context())
+    assert other.status()["status"] == "EMPTY"
+    different_dialect = knowledge.DatasetKnowledge(
+        "warehouse", "dataset", "MYSQL", semantic_context()
+    )
+    assert different_dialect.status()["status"] == "EMPTY"
+    changed = semantic_context()
+    changed["semanticVersion"] = "semantic-b"
+    stale = knowledge.DatasetKnowledge("warehouse", "dataset", "POSTGRESQL", changed)
+    assert stale.status()["status"] == "STALE"
+    with pytest.raises(knowledge.KnowledgeError):
+        stale.search("channel")
+    assert stale.index()["semanticVersion"] == "semantic-b"
+    assert memory.status()["status"] == "STALE"
+
+
+def test_failed_index_rebuild_retains_previous_generation(memory, monkeypatch):
+    memory.index()
+    before = memory._state()
+
+    def broken(self, texts):
+        raise RuntimeError("provider failure including sensitive details")
+
+    monkeypatch.setattr(FixedEmbeddings, "compute_source_embeddings", broken)
+    with pytest.raises(knowledge.KnowledgeError) as error:
+        memory.index()
+    assert "sensitive" not in str(error.value)
+    assert memory._state() == before
+    assert memory.status()["status"] == "READY"
+
+
+def test_knowledge_private_api_uses_real_store_and_controlled_errors(client, memory):
+    response = client.post("/internal/v1/knowledge/status", headers=headers(), json=envelope())
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "EMPTY"
+    response = client.post("/internal/v1/knowledge/index", headers=headers(), json=envelope())
+    assert response.status_code == 200, response.text
+    response = client.post(
+        "/internal/v1/knowledge/search",
+        headers=headers(),
+        json={**envelope(), "question": "channel"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["hits"]
+    response = client.post("/internal/v1/knowledge/remember", headers=headers(), json=envelope())
+    assert response.status_code == 422
+    response = client.post("/internal/v1/knowledge/reset", headers=headers(), json=envelope())
+    assert response.status_code == 200
+    assert response.json()["status"] == "EMPTY"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://remote.example/v1",
+        "http://localhost:11434/v1?secret=x",
+        "http://user:pass@localhost:11434/v1",
+        "http://localhost:11434/private",
+    ],
+)
+def test_embedding_endpoint_is_server_local_and_credential_free(monkeypatch, endpoint):
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_URL", endpoint)
+    with pytest.raises(knowledge.KnowledgeError):
+        knowledge.LocalEmbeddings()
+
+
+def test_generation_retrieves_actual_memory_and_revalidates_examples(client, memory, monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_ENABLED", "true")
+    monkeypatch.setenv("LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("LLM_MODEL", "local-test-model")
+    monkeypatch.setenv("LLM_API_KEY", "local-test-key")
+    captured = []
+
+    def provider(request):
+        captured.append(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"sql":"SELECT COUNT(*) AS n FROM analytics.events","explanation":"Count configured events","assumptions":[],"selectedMetrics":[],"selectedDimensions":[],"chartRecommendation":{"type":"number","title":"Event count","series":[{"column":"n","label":"Count"}]},"confidence":0.95,"model":"local-test-model"}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    app.state.provider_transport = httpx.MockTransport(provider)
+    try:
+        indexed = client.post(
+            "/internal/v1/knowledge/index",
+            headers=headers(),
+            json=envelope(),
+        )
+        assert indexed.status_code == 200, indexed.text
+        response = client.post(
+            "/internal/v1/text-to-sql",
+            json={**envelope(), "question": "How many events?"},
+            headers={**headers(), "X-Execution-Mode": "API"},
+        )
+        assert response.status_code == 200, response.text
+        assert captured and "How many events?" in captured[0]
+        assert "analytics" in captured[0]
+        # The explicitly indexed authorized envelope is retrieved from actual LanceDB.
+        status = client.post("/internal/v1/knowledge/status", headers=headers(), json=envelope())
+        assert status.json()["status"] == "READY"
+    finally:
+        if hasattr(app.state, "provider_transport"):
+            del app.state.provider_transport
+
+
+def test_deterministic_never_initializes_embeddings(client, monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_ENABLED", "true")
+    monkeypatch.setattr(
+        knowledge.DatasetKnowledge,
+        "index",
+        lambda self: pytest.fail("embedding used in deterministic mode"),
+    )
+    response = client.post(
+        "/internal/v1/text-to-sql",
+        json={**envelope(), "question": "How many events?"},
+        headers={**headers(), "X-Execution-Mode": "DETERMINISTIC"},
+    )
+    assert response.status_code == 200
+    assert response.json()["model"] == "deterministic-semantic-examples"
+
+
+def test_explicit_knowledge_index_failure_is_controlled_and_redacted(client, monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_ENABLED", "true")
+
+    def unavailable(self):
+        raise RuntimeError("private internal credential must not be returned")
+
+    monkeypatch.setattr(knowledge.DatasetKnowledge, "index", unavailable)
+    response = client.post(
+        "/internal/v1/knowledge/index",
+        json=envelope(),
+        headers=headers(),
+    )
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "KNOWLEDGE_UNAVAILABLE"
+    assert "credential" not in response.text
+
+
+@pytest.mark.parametrize("failure", ["http", "missing", "nan", "boolean", "dimension"])
+def test_embedding_adapter_rejects_malformed_or_unavailable_reply(monkeypatch, failure):
+    original = httpx.Client
+
+    def answer(request):
+        if failure == "http":
+            return httpx.Response(503, text="private provider trace")
+        vector = [0.25] * 32
+        if failure == "nan":
+            # JSON non-finite vectors must fail validation, never enter LanceDB.
+            return httpx.Response(200, content=b'{"data":[{"index":0,"embedding":[NaN]}]}')
+        if failure == "boolean":
+            vector[0] = True
+        if failure == "dimension":
+            vector = vector[:2]
+        data = [] if failure == "missing" else [{"index": 0, "embedding": vector}]
+        return httpx.Response(200, json={"data": data})
+
+    monkeypatch.setattr(
+        knowledge.httpx,
+        "Client",
+        lambda **kwargs: original(transport=httpx.MockTransport(answer), **kwargs),
+    )
+    with pytest.raises(knowledge.KnowledgeError):
+        knowledge.LocalEmbeddings().compute_source_embeddings(["schema text"])

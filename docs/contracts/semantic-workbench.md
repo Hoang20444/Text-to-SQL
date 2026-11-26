@@ -1,6 +1,6 @@
-# Business semantic compiler & AI semantic assistant (Sprint 3)
+# Semantic workbench & dataset knowledge (Sprint 3 – Sprint 4)
 
-Tài liệu hợp đồng nội bộ cho các endpoint AI & Semantic Layer của Sprint 3 (`T-3.1.1`, `T-3.2.1`, `T-3.3.2`), bổ sung cho [Java ↔ Python AI](java-python.md) và [Java ↔ native semantic planner](semantic-planner.md). Ranh giới bảo mật giữ nguyên: React chỉ gọi Java Backend; dịch vụ Python AI chỉ giao tiếp server-to-server qua `PYTHON_AI_TOKEN` và `X-Correlation-ID`, không nhận thông tin đăng nhập kho dữ liệu và không bao giờ tự thực thi SQL. Bộ enum engine giữ nguyên `POSTGRESQL`, `MYSQL`, `SQL_SERVER`.
+Tài liệu hợp đồng nội bộ cho các endpoint AI & Semantic/Knowledge Layer của Sprint 3 (`T-3.1.1`, `T-3.2.1`, `T-3.3.2`) và Sprint 4 (`T-4.1.1`, `T-4.2.1`, `T-4.3.3`), bổ sung cho [Java ↔ Python AI](java-python.md) và [Java ↔ native semantic planner](semantic-planner.md). Ranh giới bảo mật giữ nguyên: React chỉ gọi Java Backend; dịch vụ Python AI chỉ giao tiếp server-to-server qua `PYTHON_AI_TOKEN` và `X-Correlation-ID`, không nhận thông tin đăng nhập kho dữ liệu và không bao giờ tự thực thi SQL. Bộ enum engine giữ nguyên `POSTGRESQL`, `MYSQL`, `SQL_SERVER`.
 
 ## 1. Business semantic validation & compilation (`T-3.1.1`)
 
@@ -38,3 +38,16 @@ Khi `/internal/v1/text-to-sql` chạy ở chế độ LLM (`API` / `AUTO`), ứn
 - Kiểm tra tính đồng nhất của biểu thức tổng hợp (`SUM`, `AVG`, `COUNT`, ...) và danh sách `GROUP BY` (chặn lỗi thiếu cột `GROUP BY`, tham chiếu nhãn/cột biểu đồ không khớp kết quả SQL, fan-out join nhân bản phép tính tổng hợp, hoặc thiếu tie-break key khi yêu cầu thứ tự/xếp hạng).
 - Bảo toàn ý định phép tổng hợp vật lý mà người dùng yêu cầu rõ ràng (ví dụ không tự đổi `SUM` thành `AVG` hoặc `COUNT`).
 - Khi phát hiện vi phạm `InvalidAggregation` hoặc `LOW_CONFIDENCE` trên câu lệnh tổng hợp, `OpenAICompatibleModelClient` thực hiện tối đa 1 vòng tự sửa (bounded self-correction) với phản hồi lỗi cụ thể trước khi trả kết quả hợp lệ hoặc trả mã lỗi có kiểm soát.
+
+## 4. Dataset knowledge vector memory (`T-4.1.1`)
+
+- `POST /internal/v1/knowledge/{action}` (`action` ∈ `status`, `index`, `search`, `examples`, `remember`, `forget`, `reset`):
+  - Request: `{correlationId, warehouseId, datasetId, sqlDialect, semanticContext, question?, limit?, example?, entryId?}` với xác thực `Authorization: Bearer <PYTHON_AI_TOKEN>`, `X-Correlation-ID` khớp `correlationId` và giới hạn body 1 MiB.
+  - Lưu trữ & mô hình nhúng: dùng `WrenMemory` (`lancedb==0.40.0`) theo namespace băm `sha256([warehouseId, datasetId, dialect])` dưới `KNOWLEDGE_ROOT` (mặc định `.local/knowledge`, trong Docker là `/var/lib/nla/knowledge`), kèm fingerprint của manifest vật lý/ngữ nghĩa + ví dụ + `KNOWLEDGE_EMBEDDING_MODEL` (mặc định `embeddinggemma:300m` tại `KNOWLEDGE_EMBEDDING_URL` cục bộ `http://127.0.0.1:11434/v1`). Không lưu dòng dữ liệu kết quả hay thông tin đăng nhập.
+  - Trạng thái: `EMPTY` (chưa index), `READY` (khớp fingerprint hiện tại), `STALE` (schema, semantic definitions hoặc embedding model đã thay đổi). Khi rebuild thất bại, chỉ mục thế hệ trước được giữ nguyên; lỗi hệ thống trả `503 KNOWLEDGE_UNAVAILABLE` không lộ thông tin nội bộ.
+  - Tích hợp vào `/internal/v1/text-to-sql`: khi `KNOWLEDGE_ENABLED=true` và `X-Execution-Mode` khác `DETERMINISTIC`, nếu chỉ mục đang `READY`, service truy xuất vector `hits` và `approved-query` examples (được kiểm định lại bằng `recalled_example_is_valid` trước khi dùng). Nếu chỉ mục `EMPTY`/`STALE` hoặc lỗi tạm thời, quá trình sinh SQL vẫn tiếp tục với schema context của request mà không ngắt truy vấn và không chuyển sang deterministic fallback.
+
+## 5. Tiếng Việt không dấu, hỏi nối tiếp & căn chỉnh `chartRecommendation` (`T-4.2.1`, `T-4.3.3`)
+
+- **Hỏi nối tiếp (Follow-up context)**: Hỗ trợ chuỗi câu hỏi dạng `"Previous question context: <câu trước>\nFollow-up question: <câu tiếp theo>"` (tối đa 1000 ký tự). `SemanticContextSelector` lọc nhãn tiền tố để giữ đủ bảng/chỉ số của câu trước lẫn yêu cầu nối tiếp cùng toàn bộ bảng cầu nối khóa ngoại ngắn nhất, và hỗ trợ đối chiếu tiếng Việt không dấu.
+- **Căn chỉnh biểu đồ (`chartRecommendation`)**: Prompt và bộ kiểm định yêu cầu `chartRecommendation.type` thuộc `table | number | bar | grouped-bar | line | area | pie`, đồng thời mọi tên cột ở `x` và `series[].column` phải khớp chính xác với alias trong kết quả `SELECT`.
