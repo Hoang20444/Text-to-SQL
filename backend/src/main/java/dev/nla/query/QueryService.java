@@ -51,7 +51,8 @@ public class QueryService {
   }
 
   public Map<String, Object> run(Map<String, Object> b) {
-    Requests.fields(b, Set.of("warehouseId", "datasetId", "question", "mode", "providerId"));
+    Requests.fields(
+        b, Set.of("warehouseId", "datasetId", "question", "mode", "providerId", "followUpQueryId"));
     Requests.required(b, "warehouseId", "datasetId", "question");
     String question = Json.str(b, "question").strip();
     if (question.codePointCount(0, question.length()) > 1000)
@@ -73,17 +74,90 @@ public class QueryService {
     if (!Json.str(w, "status").equals("ACTIVE") || !Json.str(d, "status").equals("ACTIVE"))
       throw new ApiException(
           HttpStatus.CONFLICT, "DATASET_UNAVAILABLE", "Warehouse hoặc dataset không hoạt động.");
-    return execute(w, d, question, mode, Json.str(b, "providerId"));
+    var previous =
+        b.containsKey("followUpQueryId") ? followUpParent(b.get("followUpQueryId"), d) : null;
+    String aiQuestion =
+        previous == null ? question : followUpQuestion(chainQuestions(previous), question);
+    return execute(w, d, question, aiQuestion, mode, Json.str(b, "providerId"), previous);
+  }
+
+  static final String PREVIOUS_LABEL = "Previous question context: ";
+  static final String FOLLOW_UP_LABEL = "Follow-up question: ";
+  static final int MAX_CHAIN = 10;
+
+  /**
+   * The questions of the conversation up to and including {@code parent}, oldest first. The walk
+   * follows {@code followUpQueryId} links and stops at the first query that is gone, no longer
+   * visible or from another dataset, and after {@link #MAX_CHAIN} turns.
+   */
+  private List<String> chainQuestions(Map<String, Object> parent) {
+    var questions = new ArrayDeque<String>();
+    var current = parent;
+    while (current != null && questions.size() < MAX_CHAIN) {
+      questions.addFirst(Json.str(current, "question"));
+      String earlier = Json.str(current, "followUpQueryId");
+      Map<String, Object> next = null;
+      if (!earlier.isBlank()) {
+        try {
+          next = stored(earlier);
+        } catch (ApiException gone) {
+          next = null;
+        }
+        if (next != null && !Json.str(next, "datasetId").equals(Json.str(parent, "datasetId")))
+          next = null;
+      }
+      current = next;
+    }
+    return List.copyOf(questions);
+  }
+
+  /**
+   * The question sent to the AI for a follow-up, in the format the AI service reads (T-4.2.1,
+   * semantic-workbench.md §5): earlier questions of the chain become the previous context and the
+   * user's short question stays last. Python accepts at most 1000 characters, so the oldest turns
+   * are dropped first; when even the direct parent does not fit the request is rejected.
+   */
+  static String followUpQuestion(List<String> chain, String question) {
+    for (int first = 0; first < chain.size(); first++) {
+      String composed =
+          PREVIOUS_LABEL
+              + String.join("; ", chain.subList(first, chain.size()))
+              + "\n"
+              + FOLLOW_UP_LABEL
+              + question;
+      if (composed.codePointCount(0, composed.length()) <= 1000) return composed;
+    }
+    throw ApiException.bad(
+        "Câu hỏi nối tiếp cùng câu trước vượt quá 1000 ký tự; hãy rút gọn câu hỏi.");
+  }
+
+  /**
+   * The query a follow-up builds on (T-4.2.2, US-4.2 AC2). It must be visible to the caller like
+   * {@code GET /query/{id}}, belong to the same dataset and have succeeded; all checks happen
+   * before a history record exists.
+   */
+  private Map<String, Object> followUpParent(Object value, Map<String, Object> dataset) {
+    if (!(value instanceof String id) || id.isBlank() || id.length() > 200)
+      throw ApiException.bad("followUpQueryId phải là queryId hợp lệ.");
+    var parent = stored(id);
+    if (!Json.str(parent, "datasetId").equals(Json.str(dataset, "datasetId")))
+      throw ApiException.bad("Chỉ hỏi nối tiếp trong cùng tập dữ liệu với câu trước.");
+    if (!"SUCCESS".equals(parent.get("status")))
+      throw ApiException.bad("Chỉ hỏi nối tiếp từ câu hỏi đã chạy thành công.");
+    return parent;
   }
 
   private Map<String, Object> execute(
       Map<String, Object> w,
       Map<String, Object> d,
       String question,
+      String aiQuestion,
       String mode,
-      String providerId) {
+      String providerId,
+      Map<String, Object> previous) {
     long start = System.nanoTime();
     var q = newQuery(w, d, question, mode.equals("DETERMINISTIC") ? "DETERMINISTIC" : "API");
+    if (previous != null) q.put("followUpQueryId", previous.get("queryId"));
     store.putQuery(q);
     QueryDeadline.start();
     try {
@@ -99,7 +173,7 @@ public class QueryService {
               "sqlDialect",
               w.get("engine"),
               "question",
-              question,
+              aiQuestion,
               "semanticContext",
               context);
       if (!"DETERMINISTIC".equals(mode)) {
@@ -146,7 +220,8 @@ public class QueryService {
       var result = runReadOnly(w, sql, Integer.MAX_VALUE);
       QueryDeadline.check();
       q.put("result", result);
-      q.put("chart", candidate.get("chartRecommendation"));
+      // The AI only suggests a chart; Java decides it from the real columns (T-4.3.2).
+      q.put("chart", ChartSpecs.decide(candidate.get("chartRecommendation"), result));
       q.put("explanation", candidate.get("explanation"));
       q.put("assumptions", candidate.get("assumptions"));
       q.put("selectedMetrics", candidate.get("selectedMetrics"));
@@ -209,8 +284,13 @@ public class QueryService {
       q.put("selectedMetrics", compiled.metrics());
       q.put("selectedDimensions", compiled.dimensions());
       QueryDeadline.check();
-      q.put("result", runReadOnly(w, validated.sql(), limit));
+      var result = runReadOnly(w, validated.sql(), limit);
       QueryDeadline.check();
+      q.put("result", result);
+      q.put(
+          "chart",
+          ChartSpecs.decide(
+              ChartSpecs.suggest(compiled.metrics(), compiled.dimensions(), result), result));
       q.put("status", "SUCCESS");
     } catch (Exception e) {
       recordFailure(q, w, e);
@@ -301,6 +381,8 @@ public class QueryService {
         null,
         "sqlDialect",
         w.get("engine"),
+        "followUpQueryId",
+        null,
         "explanation",
         null,
         "assumptions",
@@ -454,6 +536,8 @@ public class QueryService {
   public Map<String, Object> publicQuery(Map<String, Object> stored) {
     var q = new LinkedHashMap<>(stored);
     q.remove("owner");
+    // History written before T-4.2.2 has no link; it is not a follow-up.
+    q.putIfAbsent("followUpQueryId", null);
     if (q.get("result") != null) {
       var full = Json.map(q.get("result"));
       var page = new LinkedHashMap<>(full);
@@ -478,6 +562,7 @@ public class QueryService {
         .map(
             q -> {
               var out = new LinkedHashMap<>(q);
+              out.putIfAbsent("followUpQueryId", null);
               for (String key :
                   List.of(
                       "generatedSql",

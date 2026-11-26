@@ -195,6 +195,40 @@ public class Store {
         kind);
   }
 
+  /** Most recent run of one kind for a dataset (T-4.1.2 knowledge sync), or null. */
+  public Map<String, Object> latestRun(String kind, String datasetId) {
+    var list =
+        jdbc.query(
+            "SELECT document::text FROM operation_run WHERE kind=? AND document->>'datasetId'=?"
+                + " ORDER BY created_at DESC LIMIT 1",
+            (rs, n) -> Json.read(rs.getString(1)),
+            kind,
+            datasetId);
+    return list.isEmpty() ? null : list.getFirst();
+  }
+
+  /** Approved knowledge examples of a dataset, oldest first (T-4.1.2). */
+  public List<Map<String, Object>> knowledgeExamples(String datasetId) {
+    return jdbc.query(
+        "SELECT document::text FROM knowledge_example WHERE dataset_id=? ORDER BY created_at, id",
+        (rs, n) -> Json.read(rs.getString(1)),
+        datasetId);
+  }
+
+  public void insertKnowledgeExample(Map<String, Object> doc) {
+    jdbc.update(
+        "INSERT INTO knowledge_example(id,dataset_id,document) VALUES (?,?,?::jsonb)",
+        doc.get("entryId"),
+        doc.get("datasetId"),
+        Json.write(doc));
+  }
+
+  public boolean deleteKnowledgeExample(String datasetId, String entryId) {
+    return jdbc.update(
+            "DELETE FROM knowledge_example WHERE dataset_id=? AND id=?", datasetId, entryId)
+        > 0;
+  }
+
   public void audit(String action, String id) {
     jdbc.update(
         "INSERT INTO audit_event(actor,action,resource_id,correlation_id) VALUES (?,?,?,?)",

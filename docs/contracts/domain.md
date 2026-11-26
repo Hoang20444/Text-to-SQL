@@ -34,7 +34,13 @@ Không dùng tên bảng không qualified làm security allowlist. Với MySQL, 
 
 ## Query request
 
-`{warehouseId:string,datasetId:string,question:string,mode?:AUTO|API|DETERMINISTIC,providerId?:string}`. providerId chỉ hợp lệ cho API, chọn profile đã cấu hình; AUTO dùng mặc định, DETERMINISTIC không dùng provider. Default AUTO dùng provider server đã cấu hình; không ngầm chuyển deterministic khi provider lỗi. `question` trim, 1..1000 ký tự Unicode. Java suy ra dialect, allowed context, model và versions. Không chấp nhận client-supplied SQL/semanticContext/credential ở endpoint này.
+`{warehouseId:string,datasetId:string,question:string,mode?:AUTO|API|DETERMINISTIC,providerId?:string,followUpQueryId?:string}`. providerId chỉ hợp lệ cho API, chọn profile đã cấu hình; AUTO dùng mặc định, DETERMINISTIC không dùng provider. Default AUTO dùng provider server đã cấu hình; không ngầm chuyển deterministic khi provider lỗi. `question` trim, 1..1000 ký tự Unicode. Java suy ra dialect, allowed context, model và versions. Không chấp nhận client-supplied SQL/semanticContext/credential ở endpoint này.
+
+`followUpQueryId` (T-4.2.2, US-4.2 AC2) là queryId của câu ngay trước khi người dùng hỏi nối tiếp; `question` chỉ chứa câu mới (ví dụ "chỉ lấy top 5"), FE không cần ghép câu cũ vào. Java kiểm tra trước khi tạo history:
+- Câu trước phải xem được như `GET /query/{id}` (chủ query hoặc ADMIN, warehouse còn được cấp quyền): không tồn tại → `404 RESOURCE_NOT_FOUND`, không có quyền → `403 FORBIDDEN`.
+- Câu trước phải cùng `datasetId` (do đó cùng warehouse) và có status `SUCCESS`; nếu không → `400 INVALID_REQUEST`. Chuỗi 1..200 ký tự, sai kiểu → 400.
+- Hợp lệ thì Java ghép câu hỏi gửi Python theo định dạng hỏi nối tiếp mà AI đọc ([semantic-workbench.md](semantic-workbench.md) §5): `"Previous question context: <các câu trước>\nFollow-up question: <câu mới>"`. Java lần ngược theo `followUpQueryId` (tối đa 10 câu, dừng ở câu đã mất, không còn quyền xem hoặc khác dataset) và nối các câu trước theo thứ tự cũ → mới bằng `"; "`, để câu thứ ba vẫn giữ điều kiện của câu đầu. Python nhận tối đa 1000 ký tự nên câu cũ nhất bị bỏ trước; nếu chỉ riêng câu liền trước cộng câu mới đã vượt 1000 ký tự → `400 INVALID_REQUEST`, không tạo history. **Không gửi SQL hay dòng kết quả của câu trước.** `Query.question` vẫn lưu đúng câu người dùng gõ, không lưu chuỗi đã ghép.
+- Query mới lưu `followUpQueryId`; chuỗi hội thoại được dựng lại bằng cách lần theo trường này. `semantic-query` không nhận trường này.
 
 ## Query (public detail)
 
@@ -53,6 +59,7 @@ Không dùng tên bảng không qualified làm security allowlist. Với MySQL, 
 | semanticVersion, schemaVersion                   | string, versions snapshot lúc chạy                                                                                                                                                                                                                                           |
 | latencyMs                                        | integer hoặc null khi đang chạy                                                                                                                                                                                                                                              |
 | createdAt, completedAt                           | timestamp; completedAt nullable                                                                                                                                                                                                                                              |
+| followUpQueryId                                  | string hoặc null; queryId của câu trước khi đây là câu hỏi nối tiếp (T-4.2.2), snapshot cũ không có field này được hiểu là null |
 | explanation                                      | string hoặc null                                                                                                                                                                                                                                                             |
 | assumptions, selectedMetrics, selectedDimensions | string[], default []                                                                                                                                                                                                                                                         |
 | sourceTables                                     | TableRef[]                                                                                                                                                                                                                                                                   |
@@ -86,6 +93,15 @@ Kết quả được lưu snapshot có giới hạn; GET trang sau và CSV đọ
 `type`: table / number / bar / grouped-bar / line / area / pie. `x` và series.column phải tồn tại trong result. table có series=[]; number có một metric scalar; bar/pie có dimension + metric; line/area ưu tiên time + metric; grouped-bar có dimension + nhiều metrics đơn vị tương thích. Không trộn tiền và số đơn hàng trên cùng một trục như một số ảnh minh họa.
 
 Python recommendation dùng cùng cấu trúc nhưng Java quyết định chart cuối sau khi kiểm tra shape/type/units; không hợp lệ thì table với reason. FE validate allowlist lần nữa. Không executable JS, HTML/component hay callback từ AI.
+
+Quy tắc Java đang áp dụng (T-4.3.2), cho cả `POST /query` và `semantic-query`:
+- `Query.chart` của truy vấn SUCCESS luôn là ChartSpec dựng lại chỉ từ các field allowlist (`type,title,x?,series,reason?`); field lạ trong recommendation bị bỏ.
+- Kết quả đúng 1 dòng × 1 cột số → `number` (thẻ KPI), bất kể AI gợi ý gì.
+- `x` và `series[].column` được đối chiếu tên cột result (chính xác trước, sau đó không phân biệt hoa thường nếu chỉ khớp một cột) và trả về tên cột thật; thiếu cột, cột lặp, series không phải INTEGER/BIGINT/DECIMAL/FLOAT hoặc toàn NULL → `table`.
+- Theo type: `number` cần 1 dòng + 1 series; `bar`/`pie` cần `x` + đúng 1 series; `pie` không nhận giá trị âm và tổng phải > 0; `grouped-bar` cần `x` + ≥2 series; `line`/`area` cần `x` + ≥1 series. Result rỗng, type ngoài allowlist hoặc không có recommendation → `table`.
+- `title` rỗng hoặc dài hơn 500 ký tự → "Kết quả truy vấn"; `label` rỗng hoặc dài hơn 500 → label cột. `reason` là tiếng Việt, chỉ có khi phải chuyển về `table` (hoặc khi recommendation `table` tự mang reason hợp lệ ≤1000 ký tự).
+- `semantic-query` không gọi AI: Java tự đề xuất trước khi kiểm tra như trên — không có dimension + 1 metric → `number`; 1 dimension TIME → `line`; 1 dimension khác → `bar` (1 metric) hoặc `grouped-bar` (nhiều metric); nhiều metric không dimension hoặc ≥2 dimension → `table` với reason.
+- Chưa kiểm tra đơn vị vì result column chưa mang `unit`; khi adapter bổ sung `unit`, grouped-bar/line/area với đơn vị khác nhau phải chuyển `table`.
 
 ## List convention
 

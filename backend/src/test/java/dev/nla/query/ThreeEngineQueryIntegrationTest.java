@@ -1,7 +1,10 @@
 package dev.nla.query;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.contains;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -9,9 +12,11 @@ import dev.nla.common.Json;
 import dev.nla.store.Store;
 import dev.nla.support.FakeAi;
 import dev.nla.support.TestJwt;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -237,5 +242,110 @@ class ThreeEngineQueryIntegrationTest {
         .andExpect(jsonPath("$.status").value("SUCCESS"))
         .andExpect(jsonPath("$.result.returnedRowCount").value(5))
         .andExpect(jsonPath("$.result.truncated").value(false));
+  }
+
+  private org.springframework.test.web.servlet.ResultActions ask(
+      String engine, String question, String followUpQueryId) throws Exception {
+    var body =
+        Json.obj(
+            "warehouseId",
+            "wh-sales-" + engine,
+            "datasetId",
+            "ds-sales-" + engine,
+            "question",
+            question,
+            "mode",
+            "DETERMINISTIC");
+    if (followUpQueryId != null) body.put("followUpQueryId", followUpQueryId);
+    return mvc.perform(
+        post("/api/v1/query")
+            .header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(Json.write(body)));
+  }
+
+  /** T-4.2.2: a follow-up sends the previous turn's validated SQL in the engine's own dialect. */
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void followUpRunsOnEachEngine(String engine) throws Exception {
+    register(engine);
+    AI.answer(
+        "SELECT country, SUM(amount) AS total_amount FROM sales.orders"
+            + " GROUP BY country ORDER BY country");
+    var first =
+        Json.read(
+            ask(engine, "Doanh thu theo quốc gia?", null)
+                .andExpect(jsonPath("$.status").value("SUCCESS"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+    AI.answer(
+        engine.equals("SQL_SERVER")
+            ? "SELECT TOP 1 country, SUM(amount) AS total_amount FROM sales.orders"
+                + " GROUP BY country ORDER BY total_amount DESC"
+            : "SELECT country, SUM(amount) AS total_amount FROM sales.orders"
+                + " GROUP BY country ORDER BY total_amount DESC LIMIT 1");
+    ask(engine, "Chỉ lấy nước cao nhất", Json.str(first, "queryId"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("SUCCESS"))
+        .andExpect(jsonPath("$.followUpQueryId").value(first.get("queryId")))
+        .andExpect(jsonPath("$.result.rows.length()").value(1))
+        .andExpect(jsonPath("$.result.rows[0].country").value("VN"))
+        .andExpect(jsonPath("$.result.rows[0].total_amount").value("300.00"));
+    var sent = Json.read(AI.lastRequest.get());
+    assertThat(sent.get("question"))
+        .as(engine)
+        .isEqualTo(
+            "Previous question context: Doanh thu theo quốc gia?\n"
+                + "Follow-up question: Chỉ lấy nước cao nhất");
+    assertThat(sent.get("sqlDialect")).isEqualTo(engine);
+  }
+
+  /** T-4.3.2: export.csv is UTF-8 with BOM, neutralises formulas and keeps negative numbers. */
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void csvExportIsExcelSafeOnEachEngine(String engine) throws Exception {
+    register(engine);
+    AI.answer(
+        "SELECT country, '=1+1' AS note, -SUM(amount) AS refund FROM sales.orders"
+            + " GROUP BY country ORDER BY country");
+    String body =
+        mvc.perform(
+                post("/api/v1/query")
+                    .header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin()))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        Json.write(
+                            Json.obj(
+                                "warehouseId",
+                                "wh-sales-" + engine,
+                                "datasetId",
+                                "ds-sales-" + engine,
+                                "question",
+                                "Hoàn tiền theo quốc gia?",
+                                "mode",
+                                "DETERMINISTIC"))))
+            .andExpect(jsonPath("$.status").value("SUCCESS"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    var response =
+        mvc.perform(
+                get("/api/v1/query/" + Json.str(Json.read(body), "queryId") + "/export.csv")
+                    .header(HttpHeaders.AUTHORIZATION, TestJwt.bearer(TestJwt.admin())))
+            .andExpect(status().isOk())
+            .andExpect(header().string(HttpHeaders.CONTENT_TYPE, "text/csv;charset=UTF-8"))
+            .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+            .andReturn()
+            .getResponse();
+    byte[] bytes = response.getContentAsByteArray();
+    assertThat(Arrays.copyOf(bytes, 3)).as(engine).isEqualTo(CsvExport.BOM);
+    assertThat(new String(bytes, 3, bytes.length - 3, StandardCharsets.UTF_8))
+        .as(engine)
+        .isEqualTo(
+            "\"country\",\"note\",\"refund\"\r\n"
+                + "\"JP\",\"'=1+1\",\"-10.00\"\r\n"
+                + "\"US\",\"'=1+1\",\"-100.00\"\r\n"
+                + "\"VN\",\"'=1+1\",\"-300.00\"\r\n");
   }
 }

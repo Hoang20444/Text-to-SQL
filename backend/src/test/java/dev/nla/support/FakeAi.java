@@ -5,7 +5,16 @@ import dev.nla.common.Json;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -26,6 +35,16 @@ public final class FakeAi {
   // Answer of /model-provider/status; null provider means the AI service has no model configured.
   public final AtomicReference<String> providerStatus =
       new AtomicReference<>("{\"provider\":null}");
+  // Dataset knowledge store (T-4.1.2): a small in-memory stand-in for the LanceDB index.
+  public final AtomicReference<String> knowledgeState = new AtomicReference<>("READY");
+  public final AtomicBoolean knowledgeDown = new AtomicBoolean();
+  public final AtomicBoolean indexFails = new AtomicBoolean();
+  // When set, /knowledge/index waits for it, so a test can observe a RUNNING sync.
+  public final AtomicReference<CountDownLatch> indexGate = new AtomicReference<>();
+  public final List<String> knowledgeCalls = Collections.synchronizedList(new ArrayList<>());
+  public final Map<String, String> knowledgeLastBody = new ConcurrentHashMap<>();
+  public final List<Map<String, Object>> knowledgeEntries =
+      Collections.synchronizedList(new ArrayList<>());
   private final HttpServer server;
 
   public FakeAi() {
@@ -34,6 +53,28 @@ public final class FakeAi {
     } catch (IOException e) {
       throw new IllegalStateException(e);
     }
+    server.setExecutor(Executors.newCachedThreadPool());
+    server.createContext(
+        "/internal/v1/knowledge/",
+        exchange -> {
+          String action = exchange.getRequestURI().getPath().replace("/internal/v1/knowledge/", "");
+          String raw = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+          knowledgeCalls.add(action);
+          knowledgeLastBody.put(action, raw);
+          int code = 200;
+          Object answer;
+          try {
+            answer = knowledge(action, Json.read(raw));
+          } catch (IllegalStateException unavailable) {
+            code = 503;
+            answer = Json.obj("error", Json.obj("code", "KNOWLEDGE_UNAVAILABLE"));
+          }
+          byte[] bytes = Json.write(answer).getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(code, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.close();
+        });
     server.createContext(
         "/internal/v1/text-to-sql",
         exchange -> {
@@ -77,6 +118,128 @@ public final class FakeAi {
 
   public void stop() {
     server.stop(0);
+  }
+
+  public void resetKnowledge() {
+    knowledgeState.set("READY");
+    knowledgeDown.set(false);
+    indexFails.set(false);
+    indexGate.set(null);
+    knowledgeCalls.clear();
+    knowledgeLastBody.clear();
+    knowledgeEntries.clear();
+  }
+
+  /** Same shapes as ai-service/knowledge.py; an IllegalStateException answers 503. */
+  private Object knowledge(String action, Map<String, Object> request) {
+    if (knowledgeDown.get()) throw new IllegalStateException();
+    var context = Json.map(request.get("semanticContext"));
+    switch (action) {
+      case "status" -> {
+        return knowledgeStatus(request, context);
+      }
+      case "index" -> {
+        var gate = indexGate.get();
+        if (gate != null) {
+          try {
+            gate.await(20, TimeUnit.SECONDS);
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        }
+        if (indexFails.get()) throw new IllegalStateException();
+        knowledgeState.set("READY");
+        return knowledgeStatus(request, context);
+      }
+      default -> {
+        if (!"READY".equals(knowledgeState.get())) throw new IllegalStateException();
+      }
+    }
+    switch (action) {
+      case "remember" -> {
+        var example = Json.map(request.get("example"));
+        String entryId =
+            Integer.toHexString(Objects.hash(example.get("question"), example.get("sql")));
+        synchronized (knowledgeEntries) {
+          if (knowledgeEntries.stream().noneMatch(e -> entryId.equals(e.get("entryId"))))
+            knowledgeEntries.add(
+                Json.obj(
+                    "entryId",
+                    entryId,
+                    "question",
+                    example.get("question"),
+                    "sql",
+                    example.get("sql"),
+                    "sqlDialect",
+                    request.get("sqlDialect"),
+                    "source",
+                    "approved-query"));
+        }
+        return knowledgeExamples();
+      }
+      case "forget" -> {
+        knowledgeEntries.removeIf(e -> Objects.equals(e.get("entryId"), request.get("entryId")));
+        return knowledgeExamples();
+      }
+      case "examples" -> {
+        return knowledgeExamples();
+      }
+      case "search" -> {
+        return Json.obj(
+            "strategy",
+            "vector",
+            "question",
+            request.get("question"),
+            "embeddingModel",
+            "embeddinggemma:300m",
+            "hits",
+            List.of(
+                Json.obj(
+                    "itemType",
+                    "model",
+                    "name",
+                    "sales.orders",
+                    "modelName",
+                    "sales.orders",
+                    "text",
+                    "Bảng đơn hàng",
+                    "distance",
+                    0.12)),
+            "examples",
+            knowledgeExamples().get("items"));
+      }
+      default -> throw new IllegalStateException();
+    }
+  }
+
+  private Map<String, Object> knowledgeExamples() {
+    synchronized (knowledgeEntries) {
+      return Json.obj("items", List.copyOf(knowledgeEntries), "total", knowledgeEntries.size());
+    }
+  }
+
+  private Map<String, Object> knowledgeStatus(
+      Map<String, Object> request, Map<String, Object> context) {
+    boolean empty = "EMPTY".equals(knowledgeState.get());
+    return Json.obj(
+        "datasetId",
+        request.get("datasetId"),
+        "status",
+        knowledgeState.get(),
+        "schemaItems",
+        empty ? 0 : 7,
+        "exampleCount",
+        empty ? 0 : knowledgeEntries.size(),
+        "embeddingModel",
+        "embeddinggemma:300m",
+        "indexedAt",
+        empty ? null : "2026-11-26T00:00:00Z",
+        "semanticVersion",
+        context.get("semanticVersion"),
+        "schemaVersion",
+        context.get("schemaVersion"),
+        "error",
+        null);
   }
 
   public void answer(String sql) {
@@ -131,7 +294,15 @@ public final class FakeAi {
             "selectedDimensions",
             List.of("country"),
             "chartRecommendation",
-            Json.obj("type", "bar", "x", "country"),
+            Json.obj(
+                "type",
+                "bar",
+                "title",
+                "Tổng tiền theo quốc gia",
+                "x",
+                "country",
+                "series",
+                List.of(Json.obj("column", "total_amount", "label", "Tổng tiền"))),
             "confidence",
             1.0,
             "model",

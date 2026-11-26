@@ -30,6 +30,17 @@ The private native planning/rewrite call is defined separately in [semantic-plan
 
 Ví dụ trên chỉ mô tả envelope: context rỗng phải bị từ chối, không là success fixture. [Fixture đầy đủ](examples/ai-request.json). Enum sqlDialect là một giá trị cụ thể, không chuỗi `POSTGRESQL | MYSQL | SQL_SERVER`. warehouseId/datasetId chỉ định danh; Python không dùng chúng để tìm credentials hay tự query.
 
+### Câu hỏi nối tiếp (T-4.2.2 ↔ T-4.2.1)
+
+Request không có field riêng cho hỏi nối tiếp. Khi public request có `followUpQueryId` hợp lệ, Java đặt vào `question` chuỗi theo định dạng AI đã chốt ở [semantic-workbench.md](semantic-workbench.md) §5:
+
+```text
+Previous question context: Doanh thu theo quốc gia?; Chỉ năm 2024
+Follow-up question: Lấy top 5
+```
+
+Các câu trước là câu người dùng gõ trong chuỗi (cũ → mới, nối bằng `"; "`), tổng cộng không quá 1000 ký tự; quy tắc cắt và lỗi ở [domain.md](domain.md#query-request). Không gửi SQL, dòng kết quả hay queryId của câu trước. Python bỏ nhãn khi chọn bảng/tra kho tri thức và vẫn trả candidate đầy đủ cho câu mới; candidate qua đủ kiểm tra Python và guard Java như mọi câu hỏi.
+
 ## Response 200
 
 ```json

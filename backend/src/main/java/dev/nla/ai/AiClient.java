@@ -69,6 +69,56 @@ public class AiClient {
     }
   }
 
+  static final Set<String> KNOWLEDGE_ACTIONS =
+      Set.of("status", "index", "search", "examples", "remember", "forget");
+
+  /**
+   * Calls the dataset knowledge store of the AI service (T-4.1.2). Every failure (not configured,
+   * unreachable, timeout, index not ready, malformed answer) becomes {@code 503
+   * KNOWLEDGE_UNAVAILABLE}: knowledge is optional and must never expose internals.
+   */
+  public Map<String, Object> knowledge(
+      String action, Map<String, Object> request, int timeoutSeconds) {
+    if (!KNOWLEDGE_ACTIONS.contains(action))
+      throw new IllegalArgumentException("Unknown knowledge action");
+    String base = env.getProperty("PYTHON_AI_URL", "");
+    String token = env.getProperty("PYTHON_AI_TOKEN", "");
+    if (base.isBlank() || token.length() < 32)
+      throw knowledgeUnavailable("Dịch vụ AI chưa được cấu hình nên chưa dùng được kho tri thức.");
+    try {
+      URI uri = URI.create(base + "/internal/v1/knowledge/" + action);
+      if (!Set.of("http", "https").contains(uri.getScheme()) || uri.getUserInfo() != null)
+        throw new IllegalArgumentException();
+      var response =
+          http.send(
+              HttpRequest.newBuilder(uri)
+                  .timeout(Duration.ofSeconds(timeoutSeconds))
+                  .header("Content-Type", "application/json")
+                  .header("Authorization", "Bearer " + token)
+                  .header("X-Correlation-ID", Json.str(request, "correlationId"))
+                  .POST(HttpRequest.BodyPublishers.ofString(Json.write(request)))
+                  .build(),
+              HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200)
+        throw knowledgeUnavailable(
+            "Kho tri thức chưa sẵn sàng hoặc tạm lỗi; hãy đồng bộ lại chỉ mục.");
+      if (response.body().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 4194304)
+        throw knowledgeUnavailable("Phản hồi kho tri thức vượt giới hạn.");
+      return Json.read(response.body());
+    } catch (ApiException exception) {
+      throw exception;
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw knowledgeUnavailable("Yêu cầu tới kho tri thức đã dừng.");
+    } catch (Exception exception) {
+      throw knowledgeUnavailable("Không kết nối được kho tri thức của dịch vụ AI.");
+    }
+  }
+
+  private static ApiException knowledgeUnavailable(String message) {
+    return new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "KNOWLEDGE_UNAVAILABLE", message);
+  }
+
   /**
    * Asks the AI service for a semantic draft (T-3.2.2). The draft is untrusted: the caller checks
    * every definition again. Provider problems map to controlled errors; the manual semantic editor
