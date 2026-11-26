@@ -154,3 +154,25 @@ SQL Import và in-app ingestion là scope bắt buộc theo [scope](../scope.md)
 ## Semantic workbench, knowledge và transformation pipelines
 
 Các API thêm cho `/semantic`, `/knowledge`, `/pipelines` được chốt ở [semantic-workbench.md](semantic-workbench.md), gồm request/response, phân quyền, preview, version/fingerprint, idempotency và partial outcomes. OpenAPI export tiêu thụ cùng Zod schemas; không tạo bộ DTO riêng ở mỗi UI/service.
+
+### Kho tri thức AI theo dataset (T-4.1.2, US-4.1)
+
+Java là cổng duy nhất của React tới kho tri thức Python (`/internal/v1/knowledge/{action}`, [semantic-workbench.md](semantic-workbench.md) §4). Java gửi `semanticContext` hiện tại của dataset, không gửi credential hay dòng dữ liệu. Mọi endpoint yêu cầu quyền warehouse của dataset (thiếu → 403); thao tác ghi chỉ ADMIN. Field khớp `KnowledgeStatusSchema`/`KnowledgeExampleSchema`/`KnowledgeSearchSchema` của FE; field thêm được liệt kê rõ.
+
+| Endpoint | Quyền | Response |
+|---|---|---|
+| `GET /datasets/{id}/knowledge` | mọi vai trò | 200 KnowledgeStatus |
+| `GET /datasets/{id}/knowledge/examples` | mọi vai trò | 200 `{items: KnowledgeExample[], total}` |
+| `POST /datasets/{id}/knowledge/examples` | ADMIN | `{question, sql}` → 201 (mới) / 200 (đã có) `{example: KnowledgeExample, indexed: boolean}` |
+| `DELETE /datasets/{id}/knowledge/examples/{entryId}` | ADMIN | 204 |
+| `POST /datasets/{id}/knowledge/reindex` | ADMIN | 202 KnowledgeRun |
+| `POST /datasets/{id}/knowledge/search` | mọi vai trò | `{question: 1..1000, limit?: 1..20 (mặc định 8)}` → 200 KnowledgeSearch |
+
+- **KnowledgeStatus** `{datasetId, status, schemaItems, exampleCount, embeddingModel, indexedAt|null, semanticVersion, schemaVersion, error: string|null, approvedExampleCount, lastRun: KnowledgeRun|null}`. `status`: `EMPTY` (chưa lập chỉ mục), `INDEXING` (đang có KnowledgeRun `RUNNING`; Java trả ngay, không gọi Python), `READY`, `STALE` (schema/mô hình ngữ nghĩa/model nhúng đã đổi — cần đồng bộ lại), `ERROR` (không đọc được trạng thái từ Python; vẫn trả 200 để màn hình hiển thị, `error` là thông báo tiếng Việt an toàn). `exampleCount` là số câu mẫu trong chỉ mục Python; `approvedExampleCount` (thêm) là số câu mẫu đã duyệt Java đang lưu. Khi `ERROR`, các số đếm/`embeddingModel` lấy từ lần chạy gần nhất, chưa từng có thì `0`/`"unknown"`.
+- **KnowledgeExample** `{entryId, question, sql, sqlDialect, source: "approved-query"|"semantic-config", createdAt?, createdBy?}`. `approved-query` là câu mẫu ADMIN thêm qua API (Java lưu bền vững trong metadata DB, `entryId` dạng `kex-…`); `semantic-config` là `examples` của mô hình ngữ nghĩa cùng phương ngữ engine (chỉ đọc, sửa qua `PUT /semantic-model`, `entryId` dạng `semantic-<vị trí>`). Danh sách lấy từ Java, đọc được cả khi Python tắt.
+- **Thêm câu mẫu**: field lạ → 400; `question` trim 1..1000, `sql` 1..100000 ký tự. SQL phải qua bộ gác cổng AST với đúng phương ngữ của warehouse và chỉ dùng bảng/cột của dataset (vi phạm → `422 SQL_SECURITY_ERROR`/`SQL_VALIDATION_ERROR`, không lưu). Tối đa 1000 câu mẫu/dataset (vượt → 400). Cùng `question` + `sql` đã có → 200 trả bản cũ, không tạo trùng. Lưu xong, nếu chỉ mục đang `READY` thì Java gửi `remember` ngay (`indexed=true`); nếu chưa sẵn sàng hoặc Python lỗi thì vẫn lưu (`indexed=false`) và câu mẫu được nạp ở lần đồng bộ sau. Audit `KNOWLEDGE_EXAMPLE_ADD`.
+- **Xóa câu mẫu**: chỉ xóa được `approved-query` (`semantic-config` → 400; không có → 404). Khi chỉ mục `READY`, Java phải xóa được trong Python (`forget`) trước rồi mới xóa trong DB; Python lỗi → `503 KNOWLEDGE_UNAVAILABLE`, câu mẫu giữ nguyên. Khi `EMPTY`/`STALE` thì xóa trong DB ngay (lần đồng bộ sau dựng lại chỉ mục chỉ từ danh sách Java). Audit `KNOWLEDGE_EXAMPLE_DELETE`.
+- **KnowledgeRun** `{runId, datasetId, warehouseId, trigger: MANUAL|SEMANTIC_MODEL, status: RUNNING|SUCCESS|PARTIAL|FAILED, startedAt, completedAt|null, rememberedCount, skippedExamples: [{entryId, reason}], error: string|null}`. Đồng bộ chạy nền: Java gọi `index` (giới hạn 5 phút) với ngữ cảnh lúc bấm, rồi kiểm tra lại từng câu mẫu đã duyệt bằng bộ gác cổng theo cấu trúc bảng hiện tại — còn hợp lệ thì `remember`, không còn khớp thì bỏ qua và ghi vào `skippedExamples` (câu mẫu vẫn lưu, ADMIN tự sửa/xóa). Có câu bị bỏ qua hoặc `remember` lỗi → `PARTIAL`; `index` lỗi → `FAILED` (Python giữ chỉ mục thế hệ trước). Đang có run `RUNNING` cho dataset thì trả lại run đó (202), không chạy chồng; run `RUNNING` quá 15 phút (ví dụ backend khởi động lại) được coi là `FAILED`. Audit `KNOWLEDGE_REINDEX`.
+- **Tự đồng bộ**: sau mỗi `PUT /datasets/{id}/semantic-model` thành công, Java tạo KnowledgeRun `trigger=SEMANTIC_MODEL`. Lỗi đồng bộ không làm hỏng việc lưu mô hình.
+- **Tìm thử** (`search`): chuyển tiếp tới Python, trả `{strategy, question, embeddingModel, hits[], examples[]}`; chỉ mục chưa `READY` hoặc Python lỗi → `503 KNOWLEDGE_UNAVAILABLE`.
+- Truy vấn thường (`POST /query`) không phụ thuộc kho tri thức: Python tự dùng tri thức khi `READY` và bỏ qua khi chưa sẵn sàng hoặc lỗi (US-4.1 AC4).
