@@ -477,6 +477,85 @@ class SemanticModelThreeEngineIntegrationTest {
     }
   }
 
+  /** Finished knowledge sync of a dataset (T-4.1.2), waiting for the background run. */
+  private Map<String, Object> awaitKnowledgeRun(String dataset) throws Exception {
+    for (int i = 0; i < 200; i++) {
+      var last = new dev.nla.store.Store(jdbc).latestRun("KNOWLEDGE", dataset);
+      if (last != null && !"RUNNING".equals(last.get("status"))) return last;
+      Thread.sleep(100);
+    }
+    throw new AssertionError("knowledge sync did not finish");
+  }
+
+  /**
+   * T-4.1.2: saving the model syncs the knowledge index, and approved examples must be written in
+   * the warehouse's own dialect on every engine.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"POSTGRESQL", "MYSQL", "SQL_SERVER"})
+  void knowledgeExamplesUseTheWarehouseDialect(String engine) throws Exception {
+    AI.resetKnowledge();
+    String dataset = registerDataset(engine);
+    String url = "/api/v1/datasets/" + dataset + "/semantic-model";
+    as(TestJwt.admin(), put(url), model(url, "1.0.0", "SUM(orders.total)"))
+        .andExpect(status().isOk());
+    var synced = awaitKnowledgeRun(dataset);
+    assertThat(synced.get("trigger")).as(engine).isEqualTo("SEMANTIC_MODEL");
+    assertThat(synced.get("status")).as(engine).isEqualTo("SUCCESS");
+    assertThat(AI.knowledgeLastBody.get("index")).contains("\"sqlDialect\":\"" + engine + "\"");
+
+    String knowledge = "/api/v1/datasets/" + dataset + "/knowledge";
+    var backticks =
+        as(
+            TestJwt.admin(),
+            post(knowledge + "/examples"),
+            Json.obj(
+                "question", "Quốc gia khách hàng", "sql", "SELECT `country` FROM shop.customer"));
+    var brackets =
+        as(
+            TestJwt.admin(),
+            post(knowledge + "/examples"),
+            Json.obj(
+                "question", "Quốc gia khách hàng", "sql", "SELECT [country] FROM shop.customer"));
+    var portable =
+        as(
+            TestJwt.admin(),
+            post(knowledge + "/examples"),
+            Json.obj(
+                "question",
+                "Số đơn theo khách hàng",
+                "sql",
+                "SELECT customer_id, COUNT(*) AS orders FROM shop.orders GROUP BY customer_id"));
+    portable
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.example.sqlDialect").value(engine))
+        .andExpect(jsonPath("$.indexed").value(true));
+    switch (engine) {
+      case "MYSQL" -> {
+        backticks.andExpect(status().isCreated());
+        brackets.andExpect(status().isUnprocessableEntity());
+      }
+      case "SQL_SERVER" -> {
+        backticks.andExpect(status().isUnprocessableEntity());
+        brackets.andExpect(status().isCreated());
+      }
+      default -> {
+        backticks.andExpect(status().isUnprocessableEntity());
+        brackets.andExpect(status().isUnprocessableEntity());
+      }
+    }
+
+    int approved = engine.equals("POSTGRESQL") ? 1 : 2;
+    as(TestJwt.admin(), post(knowledge + "/reindex"), null).andExpect(status().isAccepted());
+    var manual = awaitKnowledgeRun(dataset);
+    assertThat(manual.get("status")).as(engine).isEqualTo("SUCCESS");
+    assertThat(manual.get("rememberedCount")).as(engine).isEqualTo(approved);
+    as(TestJwt.analyst(), get(knowledge), null)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("READY"))
+        .andExpect(jsonPath("$.approvedExampleCount").value(approved));
+  }
+
   private static Map<String, Object> endpoint(String table, String column) {
     return Json.obj("table", Json.obj("schema", "shop", "name", table), "column", column);
   }
