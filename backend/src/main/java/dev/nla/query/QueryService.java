@@ -76,26 +76,59 @@ public class QueryService {
           HttpStatus.CONFLICT, "DATASET_UNAVAILABLE", "Warehouse hoặc dataset không hoạt động.");
     var previous =
         b.containsKey("followUpQueryId") ? followUpParent(b.get("followUpQueryId"), d) : null;
-    return execute(w, d, question, mode, Json.str(b, "providerId"), previous);
+    String aiQuestion =
+        previous == null ? question : followUpQuestion(chainQuestions(previous), question);
+    return execute(w, d, question, aiQuestion, mode, Json.str(b, "providerId"), previous);
+  }
+
+  static final String PREVIOUS_LABEL = "Previous question context: ";
+  static final String FOLLOW_UP_LABEL = "Follow-up question: ";
+  static final int MAX_CHAIN = 10;
+
+  /**
+   * The questions of the conversation up to and including {@code parent}, oldest first. The walk
+   * follows {@code followUpQueryId} links and stops at the first query that is gone, no longer
+   * visible or from another dataset, and after {@link #MAX_CHAIN} turns.
+   */
+  private List<String> chainQuestions(Map<String, Object> parent) {
+    var questions = new ArrayDeque<String>();
+    var current = parent;
+    while (current != null && questions.size() < MAX_CHAIN) {
+      questions.addFirst(Json.str(current, "question"));
+      String earlier = Json.str(current, "followUpQueryId");
+      Map<String, Object> next = null;
+      if (!earlier.isBlank()) {
+        try {
+          next = stored(earlier);
+        } catch (ApiException gone) {
+          next = null;
+        }
+        if (next != null && !Json.str(next, "datasetId").equals(Json.str(parent, "datasetId")))
+          next = null;
+      }
+      current = next;
+    }
+    return List.copyOf(questions);
   }
 
   /**
-   * What the model needs to resolve a short follow-up: the previous question, its final validated
-   * SQL (which already carries the context of the whole chain), explanation and selections. Result
-   * rows are never sent.
+   * The question sent to the AI for a follow-up, in the format the AI service reads (T-4.2.1,
+   * semantic-workbench.md §5): earlier questions of the chain become the previous context and the
+   * user's short question stays last. Python accepts at most 1000 characters, so the oldest turns
+   * are dropped first; when even the direct parent does not fit the request is rejected.
    */
-  static Map<String, Object> previousTurn(Map<String, Object> parent) {
-    return Json.obj(
-        "question",
-        parent.get("question"),
-        "sql",
-        parent.get("generatedSql"),
-        "explanation",
-        parent.get("explanation"),
-        "selectedMetrics",
-        Objects.requireNonNullElse(parent.get("selectedMetrics"), List.of()),
-        "selectedDimensions",
-        Objects.requireNonNullElse(parent.get("selectedDimensions"), List.of()));
+  static String followUpQuestion(List<String> chain, String question) {
+    for (int first = 0; first < chain.size(); first++) {
+      String composed =
+          PREVIOUS_LABEL
+              + String.join("; ", chain.subList(first, chain.size()))
+              + "\n"
+              + FOLLOW_UP_LABEL
+              + question;
+      if (composed.codePointCount(0, composed.length()) <= 1000) return composed;
+    }
+    throw ApiException.bad(
+        "Câu hỏi nối tiếp cùng câu trước vượt quá 1000 ký tự; hãy rút gọn câu hỏi.");
   }
 
   /**
@@ -118,6 +151,7 @@ public class QueryService {
       Map<String, Object> w,
       Map<String, Object> d,
       String question,
+      String aiQuestion,
       String mode,
       String providerId,
       Map<String, Object> previous) {
@@ -139,10 +173,9 @@ public class QueryService {
               "sqlDialect",
               w.get("engine"),
               "question",
-              question,
+              aiQuestion,
               "semanticContext",
               context);
-      if (previous != null) request.put("previousTurn", previousTurn(previous));
       if (!"DETERMINISTIC".equals(mode)) {
         // The chosen profile's config (with its decrypted key) goes only to the private
         // AI call;
